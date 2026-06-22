@@ -3,9 +3,7 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get("q");
-  
-  // TheSportsDB free test key is "123"
-  const apiKey = process.env.THESPORTSDB_KEY || "123";
+  const apiKey = process.env.THESPORTSDB_KEY;
 
   if (!query || query.length < 3) {
     return NextResponse.json({ results: [] });

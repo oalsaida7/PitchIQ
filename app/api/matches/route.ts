@@ -3,13 +3,11 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const dateStr = searchParams.get("date") || new Date().toISOString().split("T")[0];
-
-  // TheSportsDB free test key is "123"
-  const apiKey = process.env.THESPORTSDB_KEY || "123"; 
+  const apiKey = process.env.THESPORTSDB_KEY;
 
   try {
     const res = await fetch(`https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsday.php?d=${dateStr}&s=Soccer`, {
-      next: { revalidate: 60 },
+      next: { revalidate: 30 }
     });
     const rawData = await res.json();
 
@@ -19,9 +17,8 @@ export async function GET(request: Request) {
 
     const cleanMatches = rawData.events.map((f: any) => ({
       id: f.idEvent,
-      // TheSportsDB uses text statuses instead of shortcodes
       status: f.strStatus === "Match Finished" ? "final" : f.strStatus === "Not Started" ? "scheduled" : "live",
-      liveMin: 45, // The free V1 tier does not natively stream the exact live minute
+      liveMin: 45, 
       kick: `KO · ${f.strTime.substring(0, 5)}`,
       league: f.strLeague,
       leagueId: f.idLeague,
@@ -36,7 +33,8 @@ export async function GET(request: Request) {
       score: {
         home: f.intHomeScore ?? 0,
         away: f.intAwayScore ?? 0
-      }
+      },
+      ytLink: f.strVideo || null
     }));
 
     return NextResponse.json({ matches: cleanMatches });
