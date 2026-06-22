@@ -736,7 +736,9 @@ function SearchResult({ entity }: { entity: SearchEntity }) {
               </div>
             ))}
           </div>
-          <SectionLabel style={{ marginTop: 14 } as React.CSSProperties}>Recent Results</SectionLabel>
+          <div style={{ marginTop: 14 }}>
+          <SectionLabel>Recent Results</SectionLabel>
+          </div>
           {(d.recentGames as { date: string; opp: string; result: string }[]).map((g, i) => (
             <div key={i} style={{ display: "flex", gap: 10, padding: "6px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12, alignItems: "center" }}>
               <span style={{ color: C.iceDim, minWidth: 50 }}>{g.date}</span>
