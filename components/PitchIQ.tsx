@@ -148,30 +148,86 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
   }
 
   if (tab === "lineup") {
-    const side = (lineup: any[], team: string, formation: string) => (
-      <div style={{ background: C.c3, borderRadius: 8, border: `1px solid ${C.border}`, overflow: "hidden", flex: 1 }}>
-        <div style={{ padding: "8px 10px", background: C.c4, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: C.iceDim, textTransform: "uppercase", letterSpacing: ".5px" }}>{team}</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.cyan }}>{formation}</span>
-        </div>
-        {(lineup || []).map((p, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderBottom: `1px solid ${C.border}` }}>
-            <span style={{ fontSize: 10, color: C.iceDim, minWidth: 16, fontFamily: "'JetBrains Mono', monospace" }}>{p.num}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: C.ice }}>{p.name}</div>
-              <div style={{ fontSize: 10, color: C.iceDim }}>{p.role}</div>
-            </div>
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.cyan, fontFamily: "'JetBrains Mono', monospace" }}>{p.pred}</span>
-          </div>
-        ))}
-        {!(lineup && lineup.length > 0) && <div style={{ padding: 12, fontSize: 11, color: C.iceDim, textAlign: "center" }}>Lineups populate 45m before kickoff</div>}
-      </div>
-    );
+    // Helper engine to convert API coordinate metrics ("line:column") to responsive absolute layout percentages
+    const parseCoordinates = (gridStr: string, isAway: boolean) => {
+      if (!gridStr) return { top: "50%", left: "50%" };
+      const [line, col] = gridStr.split(":").map(Number);
+      
+      // Calculate row positioning across the field halves
+      let topPercent = ((line - 1) / 4) * 85 + 8;
+      if (isAway) topPercent = 100 - topPercent; // Reverse mapping sequence for opponents
+
+      const leftPercent = ((col - 1) / 4) * 76 + 12;
+      return { top: `${topPercent}%`, left: `${leftPercent}%` };
+    };
+
     return (
-      <div className="animate-in">
-        <div style={{ display: "flex", gap: 8 }}>
-          {side(data.homeLineup, match.home, data.homeFormation || "4-3-3")}
-          {side(data.awayLineup, match.away, data.awayFormation || "4-2-3-1")}
+      <div className="animate-in" style={{ background: "#111612", borderRadius: 12, padding: 16, border: `1px solid ${C.border}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12, fontSize: 12, fontWeight: 700 }}>
+          <span style={{ color: C.cyan }}>{match.home} ({data.homeFormation})</span>
+          <span style={{ color: C.blue }}>{data.awayFormation} ({match.away})</span>
+        </div>
+
+        {/* ─── GRAPHICAL FOOTBALL FIELD CANVAS CONTAINER ─── */}
+        <div style={{ position: "relative", width: "100%", height: 420, background: "#1e2e1c", borderRadius: 8, border: "2px solid rgba(255,255,255,0.1)", overflow: "hidden", backgroundImage: "linear-gradient(rgba(255,255,255,0.03) 50%, transparent 50%)", backgroundSize: "100% 40px" }}>
+          {/* Center Field Markings Line stripe */}
+          <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: "rgba(255,255,255,0.15)" }} />
+          <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 80, height: 80, border: "1px solid rgba(255,255,255,0.15)", borderRadius: "50%" }} />
+
+          {/* HOME TEAM NODES (Top Half Grid Map) */}
+          {(data.homeLineup || []).map((p: any, i: number) => {
+            const coords = parseCoordinates(p.grid || `1:${i+1}`, false);
+            return (
+              <div key={i} style={{ position: "absolute", top: coords.top, left: coords.left, transform: "translate(-50%, -50%)", display: "flex", flexDirection: "column", alignItems: "center", zIndex: 10 }}>
+                <div style={{ position: "relative", width: 28, height: 28, borderRadius: "50%", background: C.charcoal, border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                  {p.num}
+                  {/* Floating Performance Pill Badge */}
+                  <span style={{ position: "absolute", top: -6, right: -12, fontSize: 9, fontWeight: 800, padding: "1px 4px", borderRadius: 4, background: ratingBg(p.rating || 6.5), color: ratingColor(p.rating || 6.5), scale: "0.85" }}>
+                    {(p.rating || 6.5).toFixed(1)}
+                  </span>
+                </div>
+                <span style={{ fontSize: 9, color: C.ice, fontWeight: 600, marginTop: 3, textShadow: "1px 1px 3px #000", whiteSpace: "nowrap", maxWidth: 65, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name.split(" ").pop()}</span>
+              </div>
+            );
+          })}
+
+          {/* AWAY TEAM NODES (Bottom Half Grid Map) */}
+          {(data.awayLineup || []).map((p: any, i: number) => {
+            const coords = parseCoordinates(p.grid || `4:${i+1}`, true);
+            return (
+              <div key={i} style={{ position: "absolute", top: coords.top, left: coords.left, transform: "translate(-50%, -50%)", display: "flex", flexDirection: "column", alignItems: "center", zIndex: 10 }}>
+                <div style={{ position: "relative", width: 28, height: 28, borderRadius: "50%", background: C.charcoal, border: `2px solid ${C.blue}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                  {p.num}
+                  <span style={{ position: "absolute", top: -6, right: -12, fontSize: 9, fontWeight: 800, padding: "1px 4px", borderRadius: 4, background: ratingBg(p.rating || 6.5), color: ratingColor(p.rating || 6.5), scale: "0.85" }}>
+                    {(p.rating || 6.5).toFixed(1)}
+                  </span>
+                </div>
+                <span style={{ fontSize: 9, color: C.ice, fontWeight: 600, marginTop: 3, textShadow: "1px 1px 3px #000", whiteSpace: "nowrap", maxWidth: 65, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name.split(" ").pop()}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Traditional Vertical Scroll List below the field */}
+        <div style={{ display: "flex", gap: 12, marginTop: 14 }}>
+          <div style={{ flex: 1 }}>
+            <SectionLabel style={{ color: C.cyan }}>{match.home} Squad</SectionLabel>
+            {(data.homeLineup || []).map((p: any, i: number) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                <span><span style={{ color: C.iceDim, marginRight: 6 }}>{p.num}</span> {p.name}</span>
+                <span style={{ fontWeight: 700, color: ratingColor(p.rating || 6.5) }}>{(p.rating || 6.5).toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ flex: 1 }}>
+            <SectionLabel style={{ color: C.blue }}>{match.away} Squad</SectionLabel>
+            {(data.awayLineup || []).map((p: any, i: number) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                <span><span style={{ color: C.iceDim, marginRight: 6 }}>{p.num}</span> {p.name}</span>
+                <span style={{ fontWeight: 700, color: ratingColor(p.rating || 6.5) }}>{(p.rating || 6.5).toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -376,13 +432,14 @@ function ScoresPanel() {
     let active = true;
     
     async function fetchLive(isInitialLoad = false) {
-      // Only show the loading spinner on the very first page load
+      // Only flash the loading indicator on the very first page mount
       if (isInitialLoad) setLoading(true);
       
       try {
         const res = await fetch(`/api/matches?date=${selectedDate}`);
         const data = await res.json();
         if (active && data.matches) {
+          // Sort to pin major leagues at the top
           const sorted = data.matches.sort((a: any, b: any) => {
             const aIsMajor = IMPORTANT_LEAGUES.some(l => (a.leagueName || a.league).toLowerCase().includes(l)) ? 1 : 0;
             const bIsMajor = IMPORTANT_LEAGUES.some(l => (b.leagueName || b.league).toLowerCase().includes(l)) ? 1 : 0;
@@ -395,11 +452,11 @@ function ScoresPanel() {
       if (isInitialLoad) setLoading(false);
     }
 
-    // 1. Run the initial load with the loading screen
+    // 1. Initial load shows the visible spinner
     fetchLive(true);
 
-    // 2. SILENT BACKGROUND SYNC: Updates data quietly every 30 seconds without interrupting the user
-    // (If you want NO auto-refreshing at all, just delete the lines below!)
+    // 2. SILENT BACKGROUND UPDATE: Polls quietly every 30 seconds
+    // Overwrites numbers behind the scenes without blanking out the UI
     const interval = setInterval(() => {
       fetchLive(false); 
     }, 30000); 
