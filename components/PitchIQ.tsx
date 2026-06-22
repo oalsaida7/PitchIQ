@@ -622,7 +622,7 @@ function ScoutPanel() {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 17, fontWeight: 700, color: C.ice }}>{String(report.name)}</div>
               <div style={{ fontSize: 11, color: C.iceDim }}>{String(report.position)} · {String(report.club)} · {String(report.league)} · {String(report.nationality)} · Age {String(report.age)}</div>
-              {report.hidden_gem && <span style={{ fontSize: 10, fontWeight: 700, background: "#fef08a", color: "#713f12", padding: "2px 7px", borderRadius: 3, display: "inline-block", marginTop: 3 }}>💎 Hidden Gem</span>}
+              {Boolean(report.hidden_gem) && <span style={{ fontSize: 10, fontWeight: 700, background: "#fef08a", color: "#713f12", padding: "2px 7px", borderRadius: 3, display: "inline-block", marginTop: 3 }}>💎 Hidden Gem</span>}
             </div>
             <div style={{ fontSize: 32, fontWeight: 800, color: C.cyan, fontFamily: "'JetBrains Mono', monospace" }}>{String(report.overall)}</div>
           </div>
