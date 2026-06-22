@@ -374,13 +374,15 @@ function ScoresPanel() {
 
   useEffect(() => {
     let active = true;
-    async function fetchLive() {
-      setLoading(true);
+    
+    async function fetchLive(isInitialLoad = false) {
+      // Only show the loading spinner on the very first page load
+      if (isInitialLoad) setLoading(true);
+      
       try {
         const res = await fetch(`/api/matches?date=${selectedDate}`);
         const data = await res.json();
         if (active && data.matches) {
-          // Sort to pin major leagues at the top
           const sorted = data.matches.sort((a: any, b: any) => {
             const aIsMajor = IMPORTANT_LEAGUES.some(l => (a.leagueName || a.league).toLowerCase().includes(l)) ? 1 : 0;
             const bIsMajor = IMPORTANT_LEAGUES.some(l => (b.leagueName || b.league).toLowerCase().includes(l)) ? 1 : 0;
@@ -389,10 +391,19 @@ function ScoresPanel() {
           setMatches(sorted);
         }
       } catch (e) { console.error(e); }
-      setLoading(false);
+      
+      if (isInitialLoad) setLoading(false);
     }
-    fetchLive();
-    const interval = setInterval(fetchLive, 30000); 
+
+    // 1. Run the initial load with the loading screen
+    fetchLive(true);
+
+    // 2. SILENT BACKGROUND SYNC: Updates data quietly every 30 seconds without interrupting the user
+    // (If you want NO auto-refreshing at all, just delete the lines below!)
+    const interval = setInterval(() => {
+      fetchLive(false); 
+    }, 30000); 
+
     return () => { active = false; clearInterval(interval); };
   }, [selectedDate]);
 
