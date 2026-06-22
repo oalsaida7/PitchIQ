@@ -8,14 +8,14 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        pitch: {
-          green: "#166534",
-          dark: "#0f4c28",
-          light: "#d1fae5",
-        },
+        obsidian: "#0B0C10",
+        charcoal: "#1F2833",
+        cyan: "#66FCF1",
+        ice: "#C5C6C7",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["'Space Grotesk'", "system-ui", "sans-serif"],
+        mono: ["'JetBrains Mono'", "monospace"],
       },
     },
   },
