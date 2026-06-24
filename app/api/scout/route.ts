@@ -1,84 +1,154 @@
-import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
+import { NextResponse } from "next/server";
 
 const client = new Anthropic();
+
+interface TSDBPlayer {
+  idPlayer: string;
+  strPlayer: string;
+  strTeam?: string;
+  strTeam2?: string;
+  strPosition?: string;
+  strNationality?: string;
+  dateBorn?: string;
+  strHeight?: string;
+  strWeight?: string;
+  strDescriptionEN?: string;
+  strThumb?: string;
+  strCutout?: string;
+  strWage?: string;
+  strBirthLocation?: string;
+  strSigning?: string;
+  strNumber?: string;
+}
+
+interface YouTubeSearchItem {
+  id: { videoId: string };
+  snippet: { title: string; channelTitle: string; thumbnails: { default: { url: string } } };
+}
+
+async function fetchYouTubeHighlight(playerName: string): Promise<{ url: string | null; title: string | null; thumb: string | null }> {
+  const ytKey = process.env.YOUTUBE_API_KEY;
+  if (!ytKey) return { url: null, title: null, thumb: null };
+
+  try {
+    const q = encodeURIComponent(`${playerName} football highlights`);
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&q=${q}&type=video&key=${ytKey}&videoEmbeddable=true&relevanceLanguage=en`,
+      { next: { revalidate: 3600 } }
+    );
+    if (!res.ok) return { url: null, title: null, thumb: null };
+    const data = await res.json();
+
+    // Pick the first result with "highlight" or "skill" in the title, fallback to first
+    const items: YouTubeSearchItem[] = data.items || [];
+    const best =
+      items.find(
+        (it) =>
+          it.snippet.title.toLowerCase().includes("highlight") ||
+          it.snippet.title.toLowerCase().includes("skill") ||
+          it.snippet.title.toLowerCase().includes("goals")
+      ) || items[0];
+
+    if (!best) return { url: null, title: null, thumb: null };
+    return {
+      url: `https://www.youtube.com/watch?v=${best.id.videoId}`,
+      title: best.snippet.title,
+      thumb: best.snippet.thumbnails?.default?.url || null,
+    };
+  } catch (e) {
+    console.error("YouTube API error:", e);
+    return { url: null, title: null, thumb: null };
+  }
+}
 
 export async function POST(request: Request) {
   try {
     const { name } = await request.json();
-    
-    // 1. Fetch Real Player Profile from your paid TheSportsDB API
-    const sportsDbKey = process.env.THESPORTSDB_KEY;
-    const dbRes = await fetch(`https://www.thesportsdb.com/api/v1/json/${sportsDbKey}/searchplayers.php?p=${encodeURIComponent(name)}`);
+    if (!name?.trim()) return NextResponse.json({ error: "Name required" }, { status: 400 });
+
+    const apiKey = process.env.THESPORTSDB_KEY;
+
+    // Fetch real player data from TSDB
+    const dbRes = await fetch(
+      `https://www.thesportsdb.com/api/v1/json/${apiKey}/searchplayers.php?p=${encodeURIComponent(name)}`,
+      { next: { revalidate: 300 } }
+    );
     const dbData = await dbRes.json();
-    
-    // Extract the verified data if the player exists in the database
-    const realPlayerContext = dbData.player && dbData.player.length > 0 
-      ? dbData.player[0] 
-      : null;
+    const realPlayer: TSDBPlayer | null = dbData.player?.[0] ?? null;
 
-    // 2. Fetch Direct Highlight Video from YouTube API
-    let directYtLink = null;
-    if (process.env.YOUTUBE_API_KEY) {
-      try {
-        const ytRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&q=${encodeURIComponent(name + " football skills highlights")}&type=video&key=${process.env.YOUTUBE_API_KEY}`);
-        const ytData = await ytRes.json();
-        
-        // If a video is found, construct the direct watch URL
-        if (ytData.items && ytData.items.length > 0) {
-          directYtLink = `https://www.youtube.com/watch?v=${ytData.items[0].id.videoId}`;
-        }
-      } catch (e) {
-        console.error("YouTube API error:", e);
-      }
-    }
+    // Fetch YouTube highlight in parallel with Claude
+    const [ytResult, aiMessage] = await Promise.all([
+      fetchYouTubeHighlight(realPlayer?.strPlayer || name),
+      client.messages.create({
+        model: "claude-3-haiku-20240307",
+        max_tokens: 900,
+        messages: [
+          {
+            role: "user",
+            content: `You are an elite global football scout. You must scout: ${name}.
 
-    // 3. Build the LLM Prompt grounded in real data
-    const prompt = `Act as an elite global football scout. Scout the player: ${name}.
-    Here is their verified real-time database profile for context (use this for their current club, position, and nationality):
-    ${JSON.stringify(realPlayerContext)}
-    
-    Based on this database profile and your deep historic knowledge, respond ONLY in a raw, valid JSON block with these exact keys. Do not use markdown wrappers:
-    {
-      "name": "Full Name",
-      "club": "Current Club",
-      "league": "League Name",
-      "nationality": "Nationality",
-      "position": "Position",
-      "age": 25,
-      "overall": 82,
-      "hidden_gem": false,
-      "ratings": {"pace": 80, "technical": 83, "physical": 70, "mental": 78, "defending": 45, "shooting": 81},
-      "seasonStats": {"goals": 14, "assists": 7, "apps": 28, "avgRating": 7.4},
-      "pastSeasonStats": [
-        {"year": "2024/25", "club": "Club", "goals": 19, "assists": 11, "apps": 34},
-        {"year": "2023/24", "club": "Club", "goals": 11, "assists": 5, "apps": 30}
-      ],
-      "strengths": ["Strength 1", "Strength 2"],
-      "weaknesses": ["Weakness 1"],
-      "style": "Description.",
-      "verdict": "Verdict text."
-    }`;
+Here is their verified database profile (use this for current club, position, nationality — do not contradict it):
+${JSON.stringify(realPlayer || {})}
 
-    // 4. Call Claude Haiku (Cheaper, Faster, Great at JSON)
-    const message = await client.messages.create({
-      model: "claude-3-haiku-20240307",
-      max_tokens: 800,
-      messages: [{ role: "user", content: prompt }],
-    });
+Based on this real profile plus your deep football knowledge, produce a scouting report.
+Respond ONLY with a raw valid JSON object. No markdown. No backticks. No explanation outside the JSON.
+Schema:
+{
+  "name": "string — exact name from DB profile",
+  "club": "string — current club from DB or best known",
+  "league": "string",
+  "nationality": "string — from DB",
+  "position": "string — from DB",
+  "age": number,
+  "overall": number between 60-99,
+  "hidden_gem": boolean,
+  "ratings": {
+    "pace": number,
+    "technical": number,
+    "physical": number,
+    "mental": number,
+    "defending": number,
+    "shooting": number
+  },
+  "seasonStats": {
+    "goals": number,
+    "assists": number,
+    "apps": number,
+    "avgRating": number
+  },
+  "pastSeasonStats": [
+    {"year": "2024/25", "club": "string", "goals": number, "assists": number, "apps": number},
+    {"year": "2023/24", "club": "string", "goals": number, "assists": number, "apps": number}
+  ],
+  "strengths": ["string", "string", "string"],
+  "weaknesses": ["string", "string"],
+  "style": "2-sentence description of playing style",
+  "verdict": "2-sentence scout verdict on potential and market value"
+}`,
+          },
+        ],
+      }),
+    ]);
 
-    const rawText = message.content
+    const rawText = aiMessage.content
       .filter((b) => b.type === "text")
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
 
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("JSON fail");
+    if (!jsonMatch) throw new Error("No JSON in AI response");
     const report = JSON.parse(jsonMatch[0]);
 
-    // 5. Inject our verified direct YouTube link into the final report
-    report.ytLink = directYtLink;
-    report.hasHighlight = !!directYtLink;
+    // Attach YouTube result — real link or null (frontend handles the fallback)
+    report.ytLink = ytResult.url;
+    report.ytTitle = ytResult.title;
+    report.ytThumb = ytResult.thumb;
+    report.hasHighlight = !!ytResult.url;
+
+    // Attach the real TSDB thumb if available
+    if (realPlayer?.strThumb) report.playerThumb = realPlayer.strThumb;
+    if (realPlayer?.strCutout) report.playerCutout = realPlayer.strCutout;
 
     return NextResponse.json({ report });
   } catch (err) {
