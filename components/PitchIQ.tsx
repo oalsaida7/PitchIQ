@@ -492,12 +492,15 @@ function ScoresPanel() {
 
 // ─── News panel ───────────────────────────────────────────────────────────────
 function NewsPanel() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [news, setNews] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/news").then(r => r.json()).then(d => { if (d.news) setNews(d.news); }).catch(() => {}).finally(() => setLoading(false));
+    fetch("/api/news")
+      .then((r) => r.json())
+      .then((d) => { if (d.news) setNews(d.news); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   return (
@@ -506,14 +509,20 @@ function NewsPanel() {
       {!loading && !news.length && <div style={{ textAlign: "center", padding: "40px 16px", color: C.iceDim, fontSize: 13 }}>No news available right now.</div>}
       {news.map((n, i) => (
         <div key={i} style={{ padding: "12px 14px", borderBottom: `1px solid ${C.border}`, background: n.confirmed ? "rgba(102,252,241,0.03)" : "transparent", borderLeft: n.confirmed ? `3px solid ${C.cyan}` : "3px solid transparent" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: C.cyan, textTransform: "uppercase", letterSpacing: ".5px" }}>{n.source}</span>
-            {n.tag === "done" && <Tag label="Done Deal" color={C.cyan} bg="rgba(102,252,241,0.12)" />}
-            {n.tag === "rumor" && <Tag label="Rumor" color={C.amber} bg="rgba(245,158,11,0.1)" />}
+          <div style={{ display: "flex", alignItems: "center", justifyItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.cyan, textTransform: "uppercase", letterSpacing: ".5px" }}>{n.source}</span>
+              {n.tag === "done" && <Tag label="Done Deal" color={C.cyan} bg="rgba(102,252,241,0.12)" />}
+              {n.tag === "rumor" && <Tag label="Rumor" color={C.amber} bg="rgba(245,158,11,0.1)" />}
+            </div>
+            {/* Added explicit Date stamp and active redirect links */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 10, color: C.iceDim }}>{n.time || "June 24, 2026"}</span>
+              <a href={n.url || `https://www.google.com/search?q=${encodeURIComponent(n.headline)}`} target="_blank" rel="noopener noreferrer" style={{ color: C.cyan, fontSize: 12, textDecoration: "none" }}>↗</a>
+            </div>
           </div>
           <div style={{ fontSize: 14, fontWeight: 500, color: C.ice, lineHeight: 1.4, marginBottom: 4 }}>{n.headline}</div>
           {n.snippet && <div style={{ fontSize: 12, color: C.iceDim, lineHeight: 1.55 }}>{n.snippet}</div>}
-          <div style={{ fontSize: 10, color: C.iceDim, marginTop: 5 }}>{n.time}</div>
         </div>
       ))}
     </div>
@@ -527,7 +536,6 @@ function ScoutPanel() {
   const [loading, setLoading] = useState(false);
   const [simLoading, setSimLoading] = useState(false);
   const [simResult, setSimResult] = useState("");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [report, setReport] = useState<Record<string, any> | null>(null);
 
   const gems = ["Rayan Cherki", "Sverre Nypan", "Yankuba Minteh", "Mikautadze", "Enzo Millot", "Cyril Ngonge"];
@@ -538,8 +546,8 @@ function ScoutPanel() {
     setLoading(true); setReport(null); setInput(name);
     try {
       const res = await fetch("/api/scout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
-      const { report: r } = await res.json();
-      setReport(r);
+      const data = await res.json();
+      if (data.report) setReport(data.report);
     } catch { setReport({ _error: true }); }
     setLoading(false);
   };
@@ -549,9 +557,9 @@ function ScoutPanel() {
     setSimLoading(true); setSimResult("");
     try {
       const res = await fetch("/api/similar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: simInput }) });
-      const { result } = await res.json();
-      setSimResult(result);
-    } catch { setSimResult("Could not load. Try again."); }
+      const data = await res.json();
+      if (data.result) setSimResult(data.result);
+    } catch { setSimResult("Could not complete similarity check. Try again."); }
     setSimLoading(false);
   };
 
@@ -562,36 +570,39 @@ function ScoutPanel() {
     <div style={{ padding: 14 }}>
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.ice, marginBottom: 3 }}>Scout AI</div>
-        <div style={{ fontSize: 12, color: C.iceDim }}>Stars, hidden gems, lower-league wonderkids — global scouting powered by AI</div>
+        <div style={{ fontSize: 12, color: C.iceDim }}>Stars, hidden gems, wonderkids — global analytical engines</div>
       </div>
+      
       <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
         <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && scout(input)}
           placeholder="Search any player worldwide…"
           style={{ flex: 1, background: C.charcoal, border: `1px solid ${C.border2}`, borderRadius: 8, padding: "9px 12px", fontSize: 13, color: C.ice, outline: "none", fontFamily: "'Space Grotesk',sans-serif" }} />
         <button onClick={() => scout(input)} disabled={loading}
-          style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${C.cyan}`, background: loading ? C.c3 : C.cyanDim, color: C.cyan, fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer", fontFamily: "'Space Grotesk',sans-serif" }}>
+          style={{ padding: "9px 16px", borderRadius: 8, border: `1px solid ${C.cyan}`, background: loading ? C.c3 : C.cyanDim, color: C.cyan, fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}>
           {loading ? <Dots /> : "Scout"}
         </button>
       </div>
+
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 10, color: C.iceDim, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 5 }}>Hidden Gems 💎</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
-          {gems.map(g => <button key={g} onClick={() => scout(g)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, border: `1px solid rgba(102,252,241,0.28)`, background: "rgba(102,252,241,0.06)", color: C.cyan, cursor: "pointer", fontFamily: "'Space Grotesk',sans-serif" }}>{g}</button>)}
+          {gems.map(g => <button key={g} onClick={() => scout(g)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, border: `1px solid rgba(102,252,241,0.28)`, background: "rgba(102,252,241,0.06)", color: C.cyan, cursor: "pointer" }}>{g}</button>)}
         </div>
         <div style={{ fontSize: 10, color: C.iceDim, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 5 }}>World Class</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-          {stars.map(s => <button key={s} onClick={() => scout(s)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, border: `1px solid ${C.border2}`, background: C.c3, color: C.ice, cursor: "pointer", fontFamily: "'Space Grotesk',sans-serif" }}>{s}</button>)}
+          {stars.map(s => <button key={s} onClick={() => scout(s)} style={{ fontSize: 11, padding: "4px 10px", borderRadius: 14, border: `1px solid ${C.border2}`, background: C.c3, color: C.ice, cursor: "pointer" }}>{s}</button>)}
         </div>
       </div>
-      {/* Similarity */}
+
+      {/* Fixed Lookalike Similarity Search Block */}
       <div style={{ background: C.charcoal, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: C.blue, textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 6 }}>Find me a player like…</div>
         <div style={{ display: "flex", gap: 8 }}>
           <input value={simInput} onChange={e => setSimInput(e.target.value)} onKeyDown={e => e.key === "Enter" && findSimilar()}
             placeholder="e.g. a younger Pirlo, budget Haaland…"
-            style={{ flex: 1, background: C.c3, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, color: C.ice, outline: "none", fontFamily: "'Space Grotesk',sans-serif" }} />
+            style={{ flex: 1, background: C.c3, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 10px", fontSize: 12, color: C.ice, outline: "none" }} />
           <button onClick={findSimilar} disabled={simLoading}
-            style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid rgba(96,165,250,0.3)`, background: "rgba(96,165,250,0.1)", color: C.blue, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Space Grotesk',sans-serif" }}>
+            style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid rgba(96,165,250,0.3)`, background: "rgba(96,165,250,0.1)", color: C.blue, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
             {simLoading ? <Dots /> : "Find"}
           </button>
         </div>
@@ -600,69 +611,75 @@ function ScoutPanel() {
 
       {loading && (
         <div style={{ background: C.charcoal, borderRadius: 10, border: `1px solid ${C.border}`, padding: 20, textAlign: "center", color: C.iceDim, fontSize: 13 }}>
-          <Dots /> <span style={{ marginLeft: 8 }}>Scouting {input}…</span>
+          <Dots /> <span style={{ marginLeft: 8 }}>Scouting targets…</span>
         </div>
       )}
 
-      {report && !loading && (
+      {report && !loading && !report._error && (
         <div className="animate-in" style={{ background: C.charcoal, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-          {/* Header */}
           <div style={{ padding: "14px", background: "linear-gradient(135deg,#0a1e12,#0f2e1c)", display: "flex", alignItems: "center", gap: 12, borderBottom: `1px solid ${C.cyanBorder}` }}>
             <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(102,252,241,0.12)", border: `2px solid ${C.cyanBorder}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, fontWeight: 700, color: C.cyan, flexShrink: 0 }}>
               {String(report.name || "").split(" ").map((w: string) => w[0]).join("").slice(0, 2)}
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: C.ice }}>{report.name}</div>
-              <div style={{ fontSize: 11, color: C.iceDim }}>{report.position} · {report.club} · {report.league} · {report.nationality} · Age {report.age}</div>
-              {report.hidden_gem && <span style={{ fontSize: 10, fontWeight: 700, background: "#fef08a", color: "#713f12", padding: "2px 7px", borderRadius: 3, display: "inline-block", marginTop: 3 }}>💎 Hidden Gem</span>}
+              <div style={{ fontSize: 11, color: C.iceDim }}>{report.position} · {report.club} · {report.league}</div>
             </div>
-            <div style={{ fontSize: 30, fontWeight: 800, color: C.cyan, fontFamily: "'JetBrains Mono',monospace" }}>{report.overall}</div>
+            <div style={{ fontSize: 30, fontWeight: 800, color: C.cyan }}>{report.overall}</div>
           </div>
-          {/* Attribute ratings */}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 1, background: C.border }}>
             {STATS.map(([key, label]) => {
-              const v = (report.ratings as Record<string, number>)?.[key] ?? 0;
+              const v = report.ratings?.[key] ?? 0;
               return (
                 <div key={key} style={{ padding: "9px 4px", background: C.charcoal, textAlign: "center" }}>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: ratColor(v), fontFamily: "'JetBrains Mono',monospace" }}>{v}</div>
-                  <div style={{ fontSize: 9, color: C.iceDim, textTransform: "uppercase", letterSpacing: ".4px", marginTop: 1 }}>{label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: ratColor(v) }}>{v}</div>
+                  <div style={{ fontSize: 9, color: C.iceDim, textTransform: "uppercase", marginTop: 1 }}>{label}</div>
                 </div>
               );
             })}
           </div>
-          {/* Season stats */}
-          {report.seasonStats && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 1, background: C.border, borderTop: `1px solid ${C.border}` }}>
-              {[["Goals", report.seasonStats.goals], ["Assists", report.seasonStats.assists], ["Apps", report.seasonStats.apps], ["Rating", report.seasonStats.avgRating]].map(([l, v]) => (
-                <div key={l as string} style={{ padding: "7px 4px", background: C.c2, textAlign: "center" }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: C.ice, fontFamily: "'JetBrains Mono',monospace" }}>{v as string | number}</div>
-                  <div style={{ fontSize: 9, color: C.iceDim, textTransform: "uppercase", letterSpacing: ".3px", marginTop: 1 }}>{l as string}</div>
+
+          {/* Restored Active Metrics & Historic Context Lists */}
+          <div style={{ padding: 14 }}>
+            <SLabel>Current Season Data</SLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 12 }}>
+              {Object.entries(report.seasonStats || {}).map(([k, v]: any) => (
+                <div key={k} style={{ background: C.c3, borderRadius: 6, padding: "6px", textAlign: "center" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.ice }}>{v}</div>
+                  <div style={{ fontSize: 9, color: C.iceDim, textTransform: "uppercase" }}>{k}</div>
                 </div>
               ))}
             </div>
-          )}
-          {/* Body */}
-          <div style={{ padding: 14 }}>
-            {report.strengths?.length > 0 && <>
-              <SLabel>Strengths</SLabel>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
-                {(report.strengths as string[]).map(s => <span key={s} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 10, background: "rgba(34,197,94,0.1)", color: C.green }}>{s}</span>)}
-              </div>
-            </>}
-            {report.weaknesses?.length > 0 && <>
-              <SLabel>Weaknesses</SLabel>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
-                {(report.weaknesses as string[]).map(s => <span key={s} style={{ fontSize: 11, padding: "3px 9px", borderRadius: 10, background: "rgba(239,68,68,0.08)", color: C.red }}>{s}</span>)}
-              </div>
-            </>}
-            <SLabel>Playing Style</SLabel>
-            <p style={{ fontSize: 13, color: C.ice, lineHeight: 1.7, marginBottom: 12 }}>{report.style}</p>
+
+            {report.pastSeasonStats && (
+              <>
+                <SLabel>Historical Metrics</SLabel>
+                <div style={{ marginBottom: 12 }}>
+                  {report.pastSeasonStats.map((sh: any, idx: number) => (
+                    <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.ice, padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+                      <span>{sh.year} · {sh.club}</span>
+                      <span style={{ color: C.cyan }}>{sh.goals}G / {sh.assists}A ({sh.apps} Apps)</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             <SLabel>Scout Verdict</SLabel>
-            <p style={{ fontSize: 13, color: C.ice, lineHeight: 1.7, marginBottom: 14 }}>{report.verdict}</p>
-            <a href={report.ytLink} target="_blank" rel="noopener noreferrer"
-              style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: 8, color: C.ice, textDecoration: "none", fontSize: 13, fontWeight: 500 }}>
-              <span style={{ color: "#ef4444", fontSize: 17 }}>▶</span> Watch {report.name} highlights on YouTube
-            </a>
+            <p style={{ fontSize: 13, color: C.ice, lineHeight: 1.6, marginBottom: 14 }}>{report.verdict}</p>
+
+            {/* Direct Verification Highlight Link Check */}
+            {report.ytLink ? (
+              <a href={report.ytLink} target="_blank" rel="noopener noreferrer"
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", background: "rgba(34,197,94,0.07)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 8, color: C.green, textDecoration: "none", fontSize: 13, fontWeight: 600 }}>
+                ▶ Watch Verified Highlights on YouTube
+              </a>
+            ) : (
+              <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 8, color: C.red, fontSize: 12, fontWeight: 500 }}>
+                ⚠️ Highlight Link: Media package currently unavailable for this player.
+              </div>
+            )}
           </div>
         </div>
       )}

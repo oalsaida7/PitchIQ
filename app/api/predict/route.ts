@@ -23,20 +23,28 @@ export async function POST(request: Request) {
 
     if (!prompts[type]) return NextResponse.json({ data: {} });
 
+    // Force the prompt to return World Cup group format if it's an international game
+    let activePrompt = prompts[type];
+    if (type === "table" && leagueName?.toLowerCase().includes("world cup")) {
+      activePrompt += `\nThis is for the FIFA World Cup. Return a realistic 4-team World Cup Group Stage standings table instead of a club league table.`;
+    }
+
     const message = await client.messages.create({
-      model: "claude-3-5-sonnet-20240620",
+      model: "claude-3-5-haiku-latest",
       max_tokens: 1000,
-      messages: [{ role: "user", content: prompts[type] }],
+      messages: [{ role: "user", content: activePrompt }],
     });
 
-    const raw = message.content
+    const rawText = message.content
       .filter((b) => b.type === "text")
       .map((b) => (b as { type: "text"; text: string }).text)
-      .join("")
-      .replace(/```json|```/g, "")
-      .trim();
+      .join("");
 
-    const data = JSON.parse(raw);
+    // Regex safety net: extracts text purely between the first { and last }
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("No valid JSON block found");
+    
+    const data = JSON.parse(jsonMatch[0]);
     return NextResponse.json({ data });
   } catch (err) {
     console.error("predict error:", err);
