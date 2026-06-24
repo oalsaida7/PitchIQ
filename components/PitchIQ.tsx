@@ -483,10 +483,29 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
     };
 
     const isRealData = data.isReal === true;
+    const hasPlayers =
+      (data.homeLineup?.length || 0) > 0 || (data.awayLineup?.length || 0) > 0;
+
+    if (data.hasLineup === false || (!hasPlayers && data._loaded)) {
+      return (
+        <div className="animate-in">
+          <div
+            style={{
+              padding: "16px 0",
+              textAlign: "center",
+              fontSize: 13,
+              color: C.iceDim,
+            }}
+          >
+            Official lineups are not yet published for this fixture.
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div className="animate-in">
-        {isRealData && (
+        {isRealData && hasPlayers && (
           <div
             style={{
               background: "rgba(34,197,94,0.08)",
@@ -1195,6 +1214,24 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
   // ── STATS ──────────────────────────────────────────────────────────────────
   if (tab === "stats") {
     const isReal = data.isReal === true;
+
+    if (data.hasStats === false) {
+      return (
+        <div className="animate-in">
+          <div
+            style={{
+              padding: "16px 0",
+              textAlign: "center",
+              fontSize: 13,
+              color: C.iceDim,
+            }}
+          >
+            Match statistics are not available yet for this fixture.
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="animate-in">
         {isReal && (
@@ -1253,8 +1290,41 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
 
   // ── TABLE ──────────────────────────────────────────────────────────────────
   if (tab === "table") {
+    const teams = data.teams || [];
+
+    if (data.hasTable === false || (data._loaded && teams.length === 0)) {
+      return (
+        <div className="animate-in">
+          <div
+            style={{
+              padding: "16px 0",
+              textAlign: "center",
+              fontSize: 13,
+              color: C.iceDim,
+            }}
+          >
+            Standings are not available for this competition right now.
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="animate-in">
+        {data.isWorldCup && data.groupName && (
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: C.cyan,
+              textTransform: "uppercase",
+              letterSpacing: ".5px",
+              marginBottom: 8,
+            }}
+          >
+            {data.groupName}
+          </div>
+        )}
         <div
           style={{
             display: "grid",
@@ -1277,19 +1347,7 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
           <span style={{ textAlign: "center" }}>L</span>
           <span style={{ textAlign: "center" }}>Pts</span>
         </div>
-        {!(data.teams?.length) && (
-          <div
-            style={{
-              padding: "12px 0",
-              fontSize: 12,
-              color: C.iceDim,
-              textAlign: "center",
-            }}
-          >
-            Standings loading…
-          </div>
-        )}
-        {(data.teams || []).map(
+        {teams.map(
           (t: {
             pos: number;
             name: string;
@@ -1494,7 +1552,18 @@ function MatchExpanded({
               fontSize: 13,
             }}
           >
-            <Dots /> Analyzing…
+            <Dots /> Loading…
+          </div>
+        ) : data._error ? (
+          <div
+            style={{
+              padding: "12px 0",
+              fontSize: 13,
+              color: C.red,
+              textAlign: "center",
+            }}
+          >
+            Could not load this tab. Please try again.
           </div>
         ) : (
           <TabContent match={match} tab={activeTab} data={data} />
@@ -1519,13 +1588,16 @@ function MatchCard({ match }: { match: any }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ match, type: tab }),
         });
-        const { data } = await res.json();
+        const payload = await res.json();
+        const data = payload?.data;
         setTabCache((prev) => ({
           ...prev,
-          [tab]: data || { _empty: true },
+          [tab]: data
+            ? { ...data, _loaded: true }
+            : { _empty: true, _loaded: true },
         }));
       } catch {
-        setTabCache((prev) => ({ ...prev, [tab]: { _error: true } }));
+        setTabCache((prev) => ({ ...prev, [tab]: { _error: true, _loaded: true } }));
       }
     },
     [match, tabCache]
@@ -1756,31 +1828,39 @@ function MatchCard({ match }: { match: any }) {
           }}
         >
           {match.timeline
-            .filter(
-              (e: { type: string }) =>
-                e.type === "goal" ||
-                e.type === "penalty" ||
-                e.type === "og"
-            )
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((e: any, i: number) => (
-              <span
-                key={i}
-                style={{
-                  fontSize: 10,
-                  color:
-                    e.team === "home" ? C.cyan : C.blue,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                }}
-              >
-                ⚽{" "}
-                <span style={{ color: C.iceDim }}>
-                  {e.playerName || "Goal"} {e.min}&apos;
+            .map((e: any, i: number) => {
+              const icon =
+                e.type === "goal" || e.type === "penalty" || e.type === "og"
+                  ? "⚽"
+                  : e.type === "yellow"
+                  ? "🟨"
+                  : e.type === "red"
+                  ? "🟥"
+                  : e.type === "subst"
+                  ? "↔"
+                  : "•";
+              const label =
+                e.text ||
+                (e.type === "subst"
+                  ? e.playerName
+                  : `${e.playerName || "Event"}${e.min ? ` ${e.min}'` : ""}`);
+              return (
+                <span
+                  key={i}
+                  style={{
+                    fontSize: 10,
+                    color: e.team === "home" ? C.cyan : C.blue,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 3,
+                  }}
+                >
+                  {icon}{" "}
+                  <span style={{ color: C.iceDim }}>{label}</span>
                 </span>
-              </span>
-            ))}
+              );
+            })}
         </div>
       )}
 
@@ -2876,15 +2956,14 @@ function ScoutPanel() {
               <div
                 style={{
                   padding: "10px 14px",
-                  background: "rgba(239,68,68,0.05)",
-                  border: "1px solid rgba(239,68,68,0.15)",
+                  background: C.c3,
+                  border: `1px solid ${C.border}`,
                   borderRadius: 8,
-                  color: C.red,
+                  color: C.iceDim,
                   fontSize: 12,
-                  fontWeight: 500,
                 }}
               >
-                ⚠️ Media package unavailable for this player.
+                No highlight video found for this player right now.
               </div>
             )}
           </div>
@@ -3244,14 +3323,14 @@ function SearchResult({ entity }: { entity: any }) {
                 style={{
                   marginTop: 10,
                   padding: "8px 12px",
-                  background: "rgba(239,68,68,0.05)",
-                  border: "1px solid rgba(239,68,68,0.15)",
+                  background: C.c3,
+                  border: `1px solid ${C.border}`,
                   borderRadius: 8,
-                  color: C.red,
+                  color: C.iceDim,
                   fontSize: 11,
                 }}
               >
-                ⚠️ Media package unavailable.
+                No highlight video found for this player right now.
               </div>
             )}
           </div>
