@@ -62,7 +62,7 @@ export async function POST(request: Request) {
 
     // 4. Call Claude Haiku (Cheaper, Faster, Great at JSON)
     const message = await client.messages.create({
-      model: "claude-3-5-haiku-latest",
+      model: "claude-3-haiku-20240307",
       max_tokens: 800,
       messages: [{ role: "user", content: prompt }],
     });
