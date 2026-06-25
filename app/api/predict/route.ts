@@ -2,11 +2,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import {
   CLAUDE_MODEL,
-  fetchJsonSafe,
   gridForPlayer,
   mapRole,
   positionToRow,
-  tsdbBase,
+  tsdbFetchV1,
+  tsdbFetchV2,
+  unwrapList,
 } from "@/lib/tsdb";
 
 const client = new Anthropic();
@@ -53,8 +54,10 @@ function inferFormationFromLineup(lineup: LineupPlayer[]): string {
   return `${counts.def || 4}-${counts.mid || 3}-${counts.fwd || 3}`;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapLineupSide(players: any[], side: "home" | "away"): LineupPlayer[] {
+function mapLineupSide(
+  players: Array<Record<string, unknown>>,
+  side: "home" | "away"
+): LineupPlayer[] {
   const isHome = side === "home";
   const starters = players.filter(
     (p) => (p.strHome === "Yes") === isHome && p.strSubstitute === "No"
@@ -62,33 +65,34 @@ function mapLineupSide(players: any[], side: "home" | "away"): LineupPlayer[] {
 
   const rowBuckets: Record<number, typeof starters> = { 1: [], 2: [], 3: [], 4: [] };
   starters.forEach((p) => {
-    rowBuckets[positionToRow(p.strPosition)].push(p);
+    rowBuckets[positionToRow(String(p.strPosition || ""))].push(p);
   });
 
   return starters.map((p) => {
-    const row = positionToRow(p.strPosition);
+    const row = positionToRow(String(p.strPosition || ""));
     const rowPlayers = rowBuckets[row];
     const idx = rowPlayers.indexOf(p);
     return {
       num: Number(p.intSquadNumber) || 0,
-      name: p.strPlayer || "Unknown",
-      role: mapRole(p.strPosition),
+      name: String(p.strPlayer || "Unknown"),
+      role: mapRole(String(p.strPosition || "")),
       grid: gridForPlayer(row, idx, rowPlayers.length, side),
       side,
     };
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapSubs(players: any[], side: "home" | "away"): string[] {
+function mapSubs(
+  players: Array<Record<string, unknown>>,
+  side: "home" | "away"
+): string[] {
   const isHome = side === "home";
   return players
     .filter((p) => (p.strHome === "Yes") === isHome && p.strSubstitute === "Yes")
-    .map((p) => p.strPlayer || "Unknown");
+    .map((p) => String(p.strPlayer || "Unknown"));
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseEventLineupStrings(ev: any): any[] {
+function parseEventLineupStrings(ev: Record<string, unknown>): Array<Record<string, string>> {
   const players: Array<Record<string, string>> = [];
   const sides = [
     {
@@ -147,20 +151,21 @@ function parseEventLineupStrings(ev: any): any[] {
         });
     }
   }
-
   return players;
 }
 
 async function fetchLineup(matchId: string) {
-  const data = await fetchJsonSafe(`${tsdbBase()}/lookuplineup.php?id=${matchId}`);
-  let players = (data.lineup as unknown[]) || [];
+  const data = await tsdbFetchV2(`lookup/event_lineup/${matchId}`);
+  let players = unwrapList(data, ["lineup", "lookup", "list"]) as Array<
+    Record<string, unknown>
+  >;
 
   if (!players.length) {
-    const evData = await fetchJsonSafe(`${tsdbBase()}/lookupevent.php?id=${matchId}`);
-    const ev = (evData.events as unknown[])?.[0];
-    if (ev) {
-      players = parseEventLineupStrings(ev);
-    }
+    const evData = await tsdbFetchV2(`lookup/event/${matchId}`);
+    const ev = unwrapList(evData, ["events", "lookup", "list"])[0] as
+      | Record<string, unknown>
+      | undefined;
+    if (ev) players = parseEventLineupStrings(ev);
   }
 
   if (!players.length) {
@@ -192,10 +197,10 @@ async function fetchLineup(matchId: string) {
 }
 
 async function fetchStats(matchId: string) {
-  const data = await fetchJsonSafe(
-    `${tsdbBase()}/lookupeventstats.php?id=${matchId}`
-  );
-  const eventstats = (data.eventstats as Array<Record<string, string>>) || [];
+  const data = await tsdbFetchV2(`lookup/event_stats/${matchId}`);
+  const eventstats = unwrapList(data, ["eventstats", "stats", "lookup", "list"]) as Array<
+    Record<string, string>
+  >;
 
   if (!eventstats.length) {
     return { hasStats: false, isReal: true, _loaded: true };
@@ -239,10 +244,10 @@ async function fetchTable(
     : ["2025", "2025-2026", "2024-2025", "2024"];
 
   for (const season of seasons) {
-    const data = await fetchJsonSafe(
-      `${tsdbBase()}/lookuptable.php?l=${leagueId}&s=${season}`
-    );
-    const table = (data.table as Array<Record<string, string>>) || [];
+    const data = await tsdbFetchV1(`lookuptable.php?l=${leagueId}&s=${season}`);
+    const table = unwrapList(data, ["table", "standings", "list"]) as Array<
+      Record<string, string>
+    >;
     if (!table.length) continue;
 
     let rows = table;
@@ -286,8 +291,7 @@ async function fetchTable(
   return { teams: [], isReal: true, hasTable: false, _loaded: true };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapEventsToCommentary(events: any[]) {
+function mapEventsToCommentary(events: Array<Record<string, unknown>>) {
   return events.map((e) => {
     let uiType = "normal";
     if (e.type === "goal") uiType = "goal";
@@ -305,39 +309,33 @@ function mapEventsToCommentary(events: any[]) {
 
 async function fetchCommentary(
   matchId: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  existingEvents: any[]
+  existingEvents: Array<Record<string, unknown>>
 ) {
-  const source =
-    existingEvents?.length > 0
-      ? existingEvents
-      : mapApiTimelineRaw(
-          ((await fetchJsonSafe(`${tsdbBase()}/lookuptimeline.php?id=${matchId}`))
-            .timeline as unknown[]) || []
-        );
+  if (existingEvents?.length) {
+    return {
+      events: mapEventsToCommentary(existingEvents),
+      isReal: true,
+      _loaded: true,
+    };
+  }
 
-  return {
-    events: mapEventsToCommentary(source),
-    isReal: true,
-    _loaded: true,
-  };
-}
+  const data = await tsdbFetchV2(`lookup/event_timeline/${matchId}`);
+  const rows = unwrapList(data, ["timeline", "lookup", "list"]) as Array<
+    Record<string, unknown>
+  >;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapApiTimelineRaw(rows: any[]) {
-  return rows.map((t) => {
+  const events = rows.map((t) => {
     const team = t.strHome === "Yes" ? "home" : "away";
     const min = String(t.intTime ?? "");
-    const kind = (t.strTimeline || "").toLowerCase();
-    const detail = (t.strTimelineDetail || "").toLowerCase();
+    const kind = String(t.strTimeline || "").toLowerCase();
+    const detail = String(t.strTimelineDetail || "").toLowerCase();
 
     if (kind === "goal") {
-      const assist = t.strAssist?.trim();
+      const assist = String(t.strAssist || "").trim();
       return {
         type: "goal",
         team,
         min,
-        playerName: t.strPlayer || "",
         label: assist
           ? `Goal — ${t.strPlayer} (assist: ${assist})`
           : `Goal — ${t.strPlayer || "Unknown"}`,
@@ -349,17 +347,18 @@ function mapApiTimelineRaw(rows: any[]) {
         type: "card",
         team,
         min,
-        playerName: t.strPlayer || "",
         label: `${isRed ? "Red" : "Yellow"} card — ${t.strPlayer || "Unknown"}`,
       };
     }
     if (kind === "subst" || kind === "substitution") {
-      const onPlayer = t.strAssist?.trim() || t.strTimelineDetail?.trim() || "";
+      const onPlayer =
+        String(t.strAssist || "").trim() ||
+        String(t.strTimelineDetail || "").trim() ||
+        "";
       return {
         type: "sub",
         team,
         min,
-        playerName: t.strPlayer || "",
         label: onPlayer
           ? `Sub: ${t.strPlayer} → ${onPlayer}`
           : `Sub: ${t.strPlayer || "Unknown"}`,
@@ -369,10 +368,11 @@ function mapApiTimelineRaw(rows: any[]) {
       type: "goal",
       team,
       min,
-      playerName: t.strPlayer || "",
-      label: t.strPlayer || "Event",
+      label: String(t.strPlayer || "Event"),
     };
   });
+
+  return { events, isReal: true, _loaded: true };
 }
 
 export async function POST(request: Request) {
@@ -381,31 +381,28 @@ export async function POST(request: Request) {
     const { home, away, leagueName, score, venue, id, leagueId } = match;
 
     if (type === "lineup") {
-      const data = await fetchLineup(String(id));
-      return NextResponse.json({ data });
+      return NextResponse.json({ data: await fetchLineup(String(id)) });
     }
-
     if (type === "stats") {
-      const data = await fetchStats(String(id));
-      return NextResponse.json({ data });
+      return NextResponse.json({ data: await fetchStats(String(id)) });
     }
-
     if (type === "table") {
-      const data = await fetchTable(
-        String(leagueId || ""),
-        leagueName || match.league || "",
-        home,
-        away
-      );
-      return NextResponse.json({ data });
+      return NextResponse.json({
+        data: await fetchTable(
+          String(leagueId || ""),
+          leagueName || match.league || "",
+          home,
+          away
+        ),
+      });
     }
-
     if (type === "commentary") {
-      const data = await fetchCommentary(
-        String(id),
-        match.events || match.timeline || []
-      );
-      return NextResponse.json({ data });
+      return NextResponse.json({
+        data: await fetchCommentary(
+          String(id),
+          match.events || match.timeline || []
+        ),
+      });
     }
 
     if (type === "preview") {
@@ -417,14 +414,8 @@ Respond ONLY valid JSON no backticks:
     }
 
     if (type === "review") {
-      const realEvents: Array<{
-        min: string;
-        team: string | null;
-        type: string;
-        label?: string;
-        text?: string;
-        playerName?: string;
-      }> = match.events || match.timeline || [];
+      const realEvents: Array<Record<string, unknown>> =
+        match.events || match.timeline || [];
       const realGoals = realEvents.filter((e) => e.type === "goal");
       const scorersContext =
         realGoals.length > 0

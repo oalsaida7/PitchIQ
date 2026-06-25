@@ -1,6 +1,5 @@
 export const CLAUDE_MODEL = "claude-3-haiku-20240307";
-
-export const TSDB_FETCH: RequestInit = { cache: "no-store" };
+export const EST_TZ = "America/New_York";
 
 export interface MatchEvent {
   type: "goal" | "card" | "sub";
@@ -118,10 +117,123 @@ const COUNTRY_ISO: Record<string, string> = {
   "Cape Verde": "cv",
 };
 
-export function tsdbBase(): string {
+export function getApiKey(): string {
   const apiKey = process.env.THESPORTSDB_KEY;
   if (!apiKey) throw new Error("THESPORTSDB_KEY not configured");
-  return `https://www.thesportsdb.com/api/v1/json/${apiKey}`;
+  return apiKey;
+}
+
+export function tsdbHeaders(): HeadersInit {
+  return { "X-API-KEY": getApiKey(), Accept: "application/json" };
+}
+
+export const TSDB_FETCH: RequestInit = { cache: "no-store" };
+
+export function tsdbV2Url(path: string): string {
+  const clean = path.replace(/^\//, "");
+  return `https://www.thesportsdb.com/api/v2/json/${clean}`;
+}
+
+export function tsdbV1Url(path: string): string {
+  const clean = path.replace(/^\//, "");
+  return `https://www.thesportsdb.com/api/v1/json/${clean}`;
+}
+
+/** @deprecated use tsdbV2Url / tsdbFetchV2 */
+export function tsdbBase(): string {
+  return `https://www.thesportsdb.com/api/v1/json/${getApiKey()}`;
+}
+
+export function slugifySearch(text: string): string {
+  return text
+    .toLowerCase()
+    .trim()
+    .replace(/['']/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+export function estDateKey(date: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: EST_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const y = parts.find((p) => p.type === "year")?.value ?? "2026";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const d = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${d}`;
+}
+
+export function addDaysToDateKey(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 17, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() + days);
+  return estDateKey(anchor);
+}
+
+export function estRelativeLabel(dateKey: string, todayKey: string): string {
+  const diff =
+    (new Date(`${dateKey}T12:00:00Z`).getTime() -
+      new Date(`${todayKey}T12:00:00Z`).getTime()) /
+    86400000;
+  if (diff === 0) return "Today";
+  if (diff === -1) return "Yesterday";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -2) return "−2 days";
+  if (diff === -3) return "−3 days";
+  if (diff === 2) return "+2 days";
+  if (diff === 3) return "+3 days";
+  if (diff === 4) return "+4 days";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: EST_TZ,
+    month: "short",
+    day: "numeric",
+  }).format(new Date(`${dateKey}T12:00:00Z`));
+}
+
+export function formatEstDateTime(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: EST_TZ,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
+export function formatKickoffEst(dateEvent: string, strTime: string): string {
+  const kick = parseKickoffUtc(dateEvent, strTime);
+  if (!kick) return "TBD";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: EST_TZ,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(kick);
+}
+
+export function parseKickoffUtc(dateEvent: string, strTime: string): Date | null {
+  if (!dateEvent) return null;
+  const timeRaw = strTime ? String(strTime).substring(0, 8) : "19:00:00";
+  const utc = new Date(`${dateEvent}T${timeRaw}Z`);
+  if (!isNaN(utc.getTime())) return utc;
+  const local = new Date(`${dateEvent}T${timeRaw}`);
+  return isNaN(local.getTime()) ? null : local;
 }
 
 export function isInternationalLeague(leagueName: string): boolean {
@@ -153,23 +265,88 @@ export function teamIconUrl(
   return badgeUrl || countryFlagUrl(teamName) || "";
 }
 
-export function parseKickoff(dateEvent: string, strTime: string): Date | null {
-  if (!dateEvent) return null;
-  const timeRaw = strTime ? String(strTime).substring(0, 8) : "15:00:00";
-  const iso = `${dateEvent}T${timeRaw}`;
-  const local = new Date(iso);
-  if (!isNaN(local.getTime())) return local;
-  const utc = new Date(`${iso}Z`);
-  return isNaN(utc.getTime()) ? null : utc;
+export function unwrapList(
+  data: Record<string, unknown> | unknown[],
+  keys: string[]
+): unknown[] {
+  if (Array.isArray(data)) return data;
+  for (const k of keys) {
+    const val = (data as Record<string, unknown>)[k];
+    if (Array.isArray(val)) return val;
+  }
+  return [];
+}
+
+export async function fetchJsonSafe(
+  url: string,
+  headers?: HeadersInit
+): Promise<Record<string, unknown>> {
+  try {
+    const res = await fetch(url, {
+      ...TSDB_FETCH,
+      headers: { ...tsdbHeaders(), ...headers },
+    });
+    if (!res.ok) return {};
+    const text = await res.text();
+    if (!text.trim()) return {};
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return { list: parsed };
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+export async function tsdbFetchV2(path: string): Promise<Record<string, unknown>> {
+  return fetchJsonSafe(tsdbV2Url(path));
+}
+
+export async function tsdbFetchV1(path: string): Promise<Record<string, unknown>> {
+  return fetchJsonSafe(tsdbV1Url(path));
+}
+
+export async function fetchLiveEvents(): Promise<
+  Array<Record<string, unknown>>
+> {
+  const data = await tsdbFetchV2("livescore/soccer");
+  return unwrapList(data, [
+    "livescore",
+    "events",
+    "results",
+    "list",
+  ]) as Array<Record<string, unknown>>;
+}
+
+export async function fetchLiveEventIds(): Promise<Set<string>> {
+  const events = await fetchLiveEvents();
+  return new Set(
+    events
+      .map((e) => String(e.idEvent || e.id || ""))
+      .filter(Boolean)
+  );
+}
+
+export async function fetchEventsForDate(dateStr: string): Promise<
+  Array<Record<string, unknown>>
+> {
+  const data = await tsdbFetchV1(
+    `eventsday.php?d=${dateStr}&s=Soccer`
+  );
+  const events = unwrapList(data, ["events", "results"]) as Array<
+    Record<string, unknown>
+  >;
+  if (events.length) return events;
+
+  const live = await fetchLiveEvents();
+  return live.filter((e) => String(e.dateEvent || "") === dateStr);
 }
 
 export function resolveMatchStatus(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  event: any,
+  event: Record<string, unknown>,
   liveIds: Set<string>,
   now: Date = new Date()
 ): "scheduled" | "live" | "final" {
-  const id = String(event.idEvent || "");
+  const id = String(event.idEvent || event.id || "");
   const strStatus = String(event.strStatus || "").trim();
   const homeScore = event.intHomeScore;
   const awayScore = event.intAwayScore;
@@ -184,7 +361,10 @@ export function resolveMatchStatus(
   if (FINISHED_STATUSES.has(strStatus)) return "final";
   if (SCHEDULED_STATUSES.has(strStatus)) return "scheduled";
 
-  const kickoff = parseKickoff(event.dateEvent, event.strTime);
+  const kickoff = parseKickoffUtc(
+    String(event.dateEvent || ""),
+    String(event.strTime || "")
+  );
   let minutesSinceKick = -9999;
   if (kickoff) {
     minutesSinceKick = (now.getTime() - kickoff.getTime()) / 60000;
@@ -208,14 +388,36 @@ export function resolveMatchStatus(
 }
 
 export function resolveLiveMinute(
-  status: string,
-  strStatus: string,
-  strProgress: string
+  event: Record<string, unknown>,
+  status: string
 ): string {
   if (status !== "live") return "";
+
+  const strStatus = String(event.strStatus || "").trim();
   if (strStatus === "HT" || strStatus === "Half Time") return "HT";
-  if (strProgress && strProgress !== "0") return `${strProgress}'`;
-  if (strStatus === "1H" || strStatus === "2H" || strStatus === "ET") return strStatus;
+
+  const raw = String(
+    event.strProgress || event.intProgress || event.strElapsed || ""
+  ).trim();
+
+  if (raw && raw !== "0") {
+    if (raw.includes(":")) return raw;
+    if (raw.includes("+")) return `${raw.replace(/\s/g, "")}'`;
+    if (/^\d+$/.test(raw)) return `${raw}'`;
+    return raw;
+  }
+
+  const kickoff = parseKickoffUtc(
+    String(event.dateEvent || ""),
+    String(event.strTime || "")
+  );
+  if (kickoff) {
+    const elapsed = (Date.now() - kickoff.getTime()) / 60000;
+    if (elapsed >= 0 && elapsed <= 120) {
+      return `${Math.floor(elapsed)}'`;
+    }
+  }
+
   return "LIVE";
 }
 
@@ -276,26 +478,4 @@ export function pitchPositionFromGrid(
 
   const topPct = 94 - ((row - 1) / 3) * 36;
   return { top: `${topPct}%`, left: `${leftPct}%` };
-}
-
-export async function fetchJsonSafe(url: string): Promise<Record<string, unknown>> {
-  try {
-    const res = await fetch(url, TSDB_FETCH);
-    if (!res.ok) return {};
-    const text = await res.text();
-    if (!text.trim()) return {};
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
-}
-
-export async function fetchLiveEventIds(): Promise<Set<string>> {
-  try {
-    const data = await fetchJsonSafe(`${tsdbBase()}/livescore.php?s=Soccer`);
-    const events = (data.events as Array<{ idEvent?: string }>) || [];
-    return new Set(events.map((e) => String(e.idEvent || "")).filter(Boolean));
-  } catch {
-    return new Set();
-  }
 }

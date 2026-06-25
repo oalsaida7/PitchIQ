@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { slugifySearch, tsdbFetchV2, unwrapList } from "@/lib/tsdb";
 
 interface TSDBPlayer {
   idPlayer: string;
@@ -31,22 +32,14 @@ interface TSDBTeam {
   strLeague?: string;
   idLeague?: string;
   strStadium?: string;
-  strStadiumThumb?: string;
   intStadiumCapacity?: string;
   strWebsite?: string;
   strDescriptionEN?: string;
   strTeamBadge?: string;
-  strTeamJersey?: string;
   strTeamBanner?: string;
   strCountry?: string;
   intFormedYear?: string;
   strManager?: string;
-  strRSS?: string;
-  strFacebook?: string;
-  strTwitter?: string;
-  strInstagram?: string;
-  strYoutube?: string;
-  strKeywords?: string;
 }
 
 function calcAge(dateBorn: string | undefined): string {
@@ -65,31 +58,22 @@ function isSoccer(sport: string | undefined): boolean {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get("q")?.trim();
-  const apiKey = process.env.THESPORTSDB_KEY;
-
-  if (!apiKey) {
-    return NextResponse.json({ results: [], error: "Search unavailable" });
-  }
 
   if (!query || query.length < 2) {
     return NextResponse.json({ results: [] });
   }
 
   try {
-    const encoded = encodeURIComponent(query);
-    const base = `https://www.thesportsdb.com/api/v1/json/${apiKey}`;
+    const playerSlug = slugifySearch(query);
+    const teamSlug = slugifySearch(query);
 
-    const [playerRes, teamRes] = await Promise.all([
-      fetch(`${base}/searchplayers.php?p=${encoded}`, {
-        next: { revalidate: 60 },
-      }),
-      fetch(`${base}/searchteams.php?t=${encoded}`, {
-        next: { revalidate: 60 },
-      }),
+    const [playerData, teamData] = await Promise.all([
+      tsdbFetchV2(`search/player/${playerSlug}`),
+      tsdbFetchV2(`search/team/${teamSlug}`),
     ]);
 
-    const playerData = playerRes.ok ? await playerRes.json() : { player: null };
-    const teamData = teamRes.ok ? await teamRes.json() : { teams: null };
+    const players = unwrapList(playerData, ["search", "player", "lookup", "list"]) as TSDBPlayer[];
+    const teams = unwrapList(teamData, ["search", "teams", "lookup", "list"]) as TSDBTeam[];
 
     const results: Array<{
       name: string;
@@ -100,72 +84,65 @@ export async function GET(request: Request) {
       detail: Record<string, unknown>;
     }> = [];
 
-    if (playerData.player) {
-      (playerData.player as TSDBPlayer[])
-        .filter((p) => isSoccer(p.strSport))
-        .slice(0, 5)
-        .forEach((p) => {
-          results.push({
-            name: p.strPlayer,
-            type: "player",
-            sub: [p.strTeam, p.strPosition, p.strNationality]
-              .filter(Boolean)
-              .join(" · "),
-            id: p.idPlayer,
-            logo: p.strThumb || p.strCutout || "",
-            detail: {
-              position: p.strPosition || "—",
-              club: p.strTeam || "—",
-              formerClub: p.strTeam2 || "",
-              nationality: p.strNationality || "—",
-              age: calcAge(p.dateBorn),
-              dateBorn: p.dateBorn || "",
-              birthLocation: p.strBirthLocation || "",
-              height: p.strHeight || "",
-              weight: p.strWeight || "",
-              number: p.strNumber || "",
-              wage: p.strWage || "",
-              signing: p.strSigning || "",
-              agent: p.strAgent || "",
-              description: p.strDescriptionEN
-                ? p.strDescriptionEN.replace(/<[^>]*>/g, "").slice(0, 400)
-                : "",
-              thumb: p.strThumb || "",
-              cutout: p.strCutout || "",
-            },
-          });
+    players
+      .filter((p) => isSoccer(p.strSport))
+      .slice(0, 5)
+      .forEach((p) => {
+        results.push({
+          name: p.strPlayer,
+          type: "player",
+          sub: [p.strTeam, p.strPosition, p.strNationality].filter(Boolean).join(" · "),
+          id: p.idPlayer,
+          logo: p.strThumb || p.strCutout || "",
+          detail: {
+            position: p.strPosition || "—",
+            club: p.strTeam || "—",
+            formerClub: p.strTeam2 || "",
+            nationality: p.strNationality || "—",
+            age: calcAge(p.dateBorn),
+            dateBorn: p.dateBorn || "",
+            birthLocation: p.strBirthLocation || "",
+            height: p.strHeight || "",
+            weight: p.strWeight || "",
+            number: p.strNumber || "",
+            wage: p.strWage || "",
+            signing: p.strSigning || "",
+            agent: p.strAgent || "",
+            description: p.strDescriptionEN
+              ? p.strDescriptionEN.replace(/<[^>]*>/g, "").slice(0, 400)
+              : "",
+            thumb: p.strThumb || "",
+            cutout: p.strCutout || "",
+          },
         });
-    }
+      });
 
-    if (teamData.teams) {
-      (teamData.teams as TSDBTeam[])
-        .filter((t) => isSoccer(t.strSport))
-        .slice(0, 5)
-        .forEach((t) => {
-          results.push({
-            name: t.strTeam,
-            type: "club",
-            sub: [t.strCountry, t.strLeague].filter(Boolean).join(" · "),
-            id: t.idTeam,
-            logo: t.strTeamBadge || "",
-            detail: {
-              stadium: t.strStadium || "—",
-              capacity: t.intStadiumCapacity || "—",
-              founded: t.intFormedYear || "—",
-              manager: t.strManager || "—",
-              league: t.strLeague || "—",
-              leagueId: t.idLeague || "",
-              country: t.strCountry || "—",
-              website: t.strWebsite || "",
-              description: t.strDescriptionEN
-                ? t.strDescriptionEN.replace(/<[^>]*>/g, "").slice(0, 400)
-                : "",
-              banner: t.strTeamBanner || "",
-              jersey: t.strTeamJersey || "",
-            },
-          });
+    teams
+      .filter((t) => isSoccer(t.strSport))
+      .slice(0, 5)
+      .forEach((t) => {
+        results.push({
+          name: t.strTeam,
+          type: "club",
+          sub: [t.strCountry, t.strLeague].filter(Boolean).join(" · "),
+          id: t.idTeam,
+          logo: t.strTeamBadge || "",
+          detail: {
+            stadium: t.strStadium || "—",
+            capacity: t.intStadiumCapacity || "—",
+            founded: t.intFormedYear || "—",
+            manager: t.strManager || "—",
+            league: t.strLeague || "—",
+            leagueId: t.idLeague || "",
+            country: t.strCountry || "—",
+            website: t.strWebsite || "",
+            description: t.strDescriptionEN
+              ? t.strDescriptionEN.replace(/<[^>]*>/g, "").slice(0, 400)
+              : "",
+            banner: t.strTeamBanner || "",
+          },
         });
-    }
+      });
 
     return NextResponse.json({ results });
   } catch (err) {

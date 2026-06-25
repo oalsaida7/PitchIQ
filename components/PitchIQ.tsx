@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { pitchPositionFromGrid } from "@/lib/tsdb";
+import { pitchPositionFromGrid, estDateKey, addDaysToDateKey, estRelativeLabel } from "@/lib/tsdb";
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -263,22 +263,14 @@ function StatBar({
 
 // ─── Date nav builder ──────────────────────────────────────────────────────────
 function buildDates() {
-  const today = new Date();
+  const todayKey = estDateKey();
   return Array.from({ length: 8 }, (_, i) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() + (i - 3));
-    const key = d.toISOString().split("T")[0];
-    const labels = [
-      "−3 days",
-      "−2 days",
-      "Yesterday",
-      "Today",
-      "Tomorrow",
-      "+2 days",
-      "+3 days",
-      "+4 days",
-    ];
-    return { key, label: labels[i], isToday: i === 3 };
+    const key = addDaysToDateKey(todayKey, i - 3);
+    return {
+      key,
+      label: estRelativeLabel(key, todayKey),
+      isToday: key === todayKey,
+    };
   });
 }
 
@@ -1820,9 +1812,7 @@ function MatchCard({ match }: { match: any }) {
 // ─── Scores panel ──────────────────────────────────────────────────────────────
 function ScoresPanel() {
   const dates = buildDates();
-  const todayKey =
-    dates.find((d) => d.isToday)?.key ||
-    new Date().toISOString().split("T")[0];
+  const todayKey = dates.find((d) => d.isToday)?.key || estDateKey();
   const [selectedDate, setSelectedDate] = useState(todayKey);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [matches, setMatches] = useState<any[]>([]);
@@ -2064,20 +2054,57 @@ function ScoresPanel() {
 function NewsPanel() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [news, setNews] = useState<any[]>([]);
+  const [categories, setCategories] = useState<
+    Array<{ id: string; label: string }>
+  >([{ id: "all", label: "All News" }]);
+  const [activeCategory, setActiveCategory] = useState("all");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/news")
+    setLoading(true);
+    fetch(`/api/news?category=${activeCategory}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (d.news) setNews(d.news);
+        if (d.categories) setCategories(d.categories);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [activeCategory]);
 
   return (
     <div>
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          padding: "10px 12px",
+          overflowX: "auto",
+          borderBottom: `1px solid ${C.border}`,
+          scrollbarWidth: "none",
+        }}
+      >
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setActiveCategory(c.id)}
+            style={{
+              flexShrink: 0,
+              padding: "5px 12px",
+              borderRadius: 16,
+              fontSize: 11,
+              fontWeight: activeCategory === c.id ? 600 : 400,
+              color: activeCategory === c.id ? "#0B0C10" : C.iceDim,
+              background: activeCategory === c.id ? C.cyan : C.c3,
+              border: `1px solid ${activeCategory === c.id ? C.cyan : C.border2}`,
+              cursor: "pointer",
+            }}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+
       {loading && (
         <div
           style={{
@@ -2130,6 +2157,17 @@ function NewsPanel() {
                 gap: 6,
               }}
             >
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: C.blue,
+                  textTransform: "uppercase",
+                  letterSpacing: ".4px",
+                }}
+              >
+                {n.categoryLabel || "News"}
+              </span>
               <span
                 style={{
                   fontSize: 10,
@@ -2193,7 +2231,15 @@ function NewsPanel() {
               marginBottom: 4,
             }}
           >
-            {n.headline}
+            <a
+              href={n.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: C.ice, textDecoration: "none" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {n.headline}
+            </a>
           </div>
           {n.snippet && (
             <div
@@ -2637,7 +2683,7 @@ function ScoutPanel() {
                 flexShrink: 0,
               }}
             >
-              {report.overall}
+              {report.overall ?? "—"}
             </div>
           </div>
 
@@ -2651,9 +2697,7 @@ function ScoutPanel() {
             }}
           >
             {STAT_KEYS.map(([key, label]) => {
-              const v = (
-                report.ratings as Record<string, number>
-              )?.[key] ?? 0;
+              const v = Number((report.ratings as Record<string, number>)?.[key] ?? 0);
               return (
                 <div
                   key={key}
@@ -2773,67 +2817,57 @@ function ScoutPanel() {
               </>
             )}
 
-            {/* Strengths */}
-            {report.strengths?.length > 0 && (
-              <>
-                <SLabel>Strengths</SLabel>
-                <div
+            {/* Strengths / Weaknesses always visible when report exists */}
+            <SLabel>Strengths</SLabel>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 5,
+                marginBottom: 12,
+              }}
+            >
+              {((report.strengths as string[]) || []).map((s) => (
+                <span
+                  key={s}
                   style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 5,
-                    marginBottom: 12,
+                    fontSize: 11,
+                    padding: "3px 9px",
+                    borderRadius: 10,
+                    background: "rgba(34,197,94,0.1)",
+                    color: C.green,
                   }}
                 >
-                  {(report.strengths as string[]).map((s) => (
-                    <span
-                      key={s}
-                      style={{
-                        fontSize: 11,
-                        padding: "3px 9px",
-                        borderRadius: 10,
-                        background: "rgba(34,197,94,0.1)",
-                        color: C.green,
-                      }}
-                    >
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              </>
-            )}
+                  {s}
+                </span>
+              ))}
+            </div>
 
-            {/* Weaknesses */}
-            {report.weaknesses?.length > 0 && (
-              <>
-                <SLabel>Weaknesses</SLabel>
-                <div
+            <SLabel>Weaknesses</SLabel>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 5,
+                marginBottom: 12,
+              }}
+            >
+              {((report.weaknesses as string[]) || []).map((w) => (
+                <span
+                  key={w}
                   style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 5,
-                    marginBottom: 12,
+                    fontSize: 11,
+                    padding: "3px 9px",
+                    borderRadius: 10,
+                    background: "rgba(239,68,68,0.1)",
+                    color: C.red,
                   }}
                 >
-                  {(report.weaknesses as string[]).map((s) => (
-                    <span
-                      key={s}
-                      style={{
-                        fontSize: 11,
-                        padding: "3px 9px",
-                        borderRadius: 10,
-                        background: "rgba(239,68,68,0.08)",
-                        color: C.red,
-                      }}
-                    >
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              </>
-            )}
+                  {w}
+                </span>
+              ))}
+            </div>
 
-            {/* Style */}
             {report.style && (
               <>
                 <SLabel>Playing Style</SLabel>
@@ -2850,7 +2884,6 @@ function ScoutPanel() {
               </>
             )}
 
-            {/* Verdict */}
             {report.verdict && (
               <>
                 <SLabel>Scout Verdict</SLabel>
