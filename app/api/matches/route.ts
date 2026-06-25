@@ -1,90 +1,78 @@
 import { NextResponse } from "next/server";
+import {
+  MatchEvent,
+  fetchLiveEventIds,
+  fetchJsonSafe,
+  isInternationalLeague,
+  normalizeEventType,
+  resolveLiveMinute,
+  resolveMatchStatus,
+  teamIconUrl,
+  tsdbBase,
+  TSDB_FETCH,
+} from "@/lib/tsdb";
 
-interface TimelineEvent {
-  type: string;
-  team: string;
-  playerName: string;
-  min: string;
-  text?: string;
-}
-
-interface TSDBTimelineRow {
-  strTimeline?: string;
-  strTimelineDetail?: string;
-  strHome?: string;
-  strPlayer?: string;
-  strAssist?: string;
-  intTime?: string | number;
-}
-
-function tsdbBase(): string {
-  const apiKey = process.env.THESPORTSDB_KEY;
-  if (!apiKey) throw new Error("THESPORTSDB_KEY not configured");
-  return `https://www.thesportsdb.com/api/v1/json/${apiKey}`;
-}
-
-function parseGoalString(goalStr: string, team: string): TimelineEvent {
+function parseGoalString(goalStr: string, team: "home" | "away"): MatchEvent {
   const match = goalStr.match(/([a-zA-ZÀ-ÿ\s.\-']+?)(?:\s+(\d+)(?:'|\+)?)?$/);
-  if (match) {
-    return {
-      type: "goal",
-      team,
-      playerName: match[1].trim(),
-      min: match[2] || "",
-      text: `Goal — ${match[1].trim()}`,
-    };
-  }
+  const name = match ? match[1].trim() : goalStr.replace(/'/g, "").trim();
+  const min = match?.[2] || "";
   return {
     type: "goal",
     team,
-    playerName: goalStr.replace(/'/g, "").replace(/:/g, "").trim(),
-    min: "",
-    text: `Goal — ${goalStr.trim()}`,
+    min,
+    playerName: name,
+    label: `Goal — ${name}`,
   };
 }
 
-function parseCardString(cardStr: string, team: string, isRed: boolean): TimelineEvent {
+function parseCardString(
+  cardStr: string,
+  team: "home" | "away",
+  isRed: boolean
+): MatchEvent {
   const match = cardStr.match(/([a-zA-ZÀ-ÿ\s.\-']+?)(?:\s+(\d+)(?:'|\+)?)?$/);
   const name = match ? match[1].trim() : cardStr.trim();
   const min = match?.[2] || "";
   return {
-    type: isRed ? "red" : "yellow",
+    type: "card",
     team,
-    playerName: name,
     min,
-    text: `${isRed ? "Red" : "Yellow"} card — ${name}`,
+    playerName: name,
+    label: `${isRed ? "Red" : "Yellow"} card — ${name}`,
   };
 }
 
-function parseSubString(subStr: string, team: string): TimelineEvent {
+function parseSubString(subStr: string, team: "home" | "away"): MatchEvent {
   const parts = subStr.split("|").map((s) => s.trim());
-  const match = subStr.match(/(\d+)(?:'|\+)?/);
-  const min = match?.[1] || "";
+  const minMatch = subStr.match(/(\d+)(?:'|\+)?/);
+  const min = minMatch?.[1] || "";
   const off = parts[0] || subStr;
   const on = parts[1] || "";
   return {
-    type: "subst",
+    type: "sub",
     team,
-    playerName: off,
     min,
-    text: on ? `Sub: ${off} → ${on}` : `Sub: ${off}`,
+    playerName: off,
+    label: on ? `Sub: ${off} → ${on}` : `Sub: ${off}`,
   };
 }
 
-function parseEventTimelineFields(event: Record<string, string | null | undefined>): TimelineEvent[] {
-  const timeline: TimelineEvent[] = [];
+function parseEventFields(
+  event: Record<string, string | null | undefined>
+): MatchEvent[] {
+  const events: MatchEvent[] = [];
 
   const pushSplit = (
     raw: string | null | undefined,
-    team: string,
-    parser: (s: string, t: string) => TimelineEvent
+    team: "home" | "away",
+    parser: (s: string, t: "home" | "away") => MatchEvent
   ) => {
     if (!raw) return;
     raw
       .split(";")
       .map((s) => s.trim())
       .filter(Boolean)
-      .forEach((entry) => timeline.push(parser(entry, team)));
+      .forEach((entry) => events.push(parser(entry, team)));
   };
 
   pushSplit(event.strHomeGoalDetails, "home", parseGoalString);
@@ -96,78 +84,68 @@ function parseEventTimelineFields(event: Record<string, string | null | undefine
   pushSplit(event.strHomeSubstitutes, "home", parseSubString);
   pushSplit(event.strAwaySubstitutes, "away", parseSubString);
 
-  return timeline.sort((a, b) => {
-    const am = parseInt(a.min, 10) || 0;
-    const bm = parseInt(b.min, 10) || 0;
-    return am - bm;
-  });
+  return events.sort(
+    (a, b) => (parseInt(a.min, 10) || 0) - (parseInt(b.min, 10) || 0)
+  );
 }
 
-function mapApiTimeline(rows: TSDBTimelineRow[]): TimelineEvent[] {
-  const events: TimelineEvent[] = [];
+function mapApiTimeline(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows: any[]
+): MatchEvent[] {
+  const events: MatchEvent[] = [];
 
   for (const row of rows) {
-    const team = row.strHome === "Yes" ? "home" : "away";
+    const team: "home" | "away" = row.strHome === "Yes" ? "home" : "away";
     const min = String(row.intTime ?? "");
     const kind = (row.strTimeline || "").toLowerCase();
     const detail = (row.strTimelineDetail || "").toLowerCase();
+    const type = normalizeEventType(kind, detail);
 
-    if (kind === "goal") {
-      const isPen = detail.includes("penalty");
-      const isOg = detail.includes("own");
-      const type = isPen ? "penalty" : isOg ? "og" : "goal";
+    if (type === "goal") {
       const assist = row.strAssist?.trim();
       events.push({
-        type,
+        type: "goal",
         team,
-        playerName: row.strPlayer || "",
         min,
-        text: assist
+        playerName: row.strPlayer || "",
+        label: assist
           ? `Goal — ${row.strPlayer} (assist: ${assist})`
           : `Goal — ${row.strPlayer || "Unknown"}`,
       });
-    } else if (kind === "card") {
+    } else if (type === "card") {
       const isRed = detail.includes("red");
       events.push({
-        type: isRed ? "red" : "yellow",
+        type: "card",
         team,
-        playerName: row.strPlayer || "",
         min,
-        text: `${isRed ? "Red" : "Yellow"} card — ${row.strPlayer || "Unknown"}`,
+        playerName: row.strPlayer || "",
+        label: `${isRed ? "Red" : "Yellow"} card — ${row.strPlayer || "Unknown"}`,
       });
-    } else if (kind === "subst" || kind === "substitution") {
+    } else if (type === "sub") {
       const onPlayer = row.strAssist?.trim() || row.strTimelineDetail?.trim() || "";
       events.push({
-        type: "subst",
+        type: "sub",
         team,
-        playerName: row.strPlayer || "",
         min,
-        text: onPlayer
+        playerName: row.strPlayer || "",
+        label: onPlayer
           ? `Sub: ${row.strPlayer} → ${onPlayer}`
           : `Sub: ${row.strPlayer || "Unknown"}`,
       });
     }
   }
 
-  return events.sort((a, b) => {
-    const am = parseInt(a.min, 10) || 0;
-    const bm = parseInt(b.min, 10) || 0;
-    return am - bm;
-  });
+  return events.sort(
+    (a, b) => (parseInt(a.min, 10) || 0) - (parseInt(b.min, 10) || 0)
+  );
 }
 
-async function fetchTimelineForEvent(eventId: string): Promise<TimelineEvent[]> {
-  try {
-    const res = await fetch(`${tsdbBase()}/lookuptimeline.php?id=${eventId}`, {
-      next: { revalidate: 30 },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    if (!data.timeline?.length) return [];
-    return mapApiTimeline(data.timeline);
-  } catch {
-    return [];
-  }
+async function fetchTimelineForEvent(eventId: string): Promise<MatchEvent[]> {
+  const data = await fetchJsonSafe(`${tsdbBase()}/lookuptimeline.php?id=${eventId}`);
+  const rows = (data.timeline as unknown[]) || [];
+  if (!rows.length) return [];
+  return mapApiTimeline(rows);
 }
 
 export async function GET(request: Request) {
@@ -176,51 +154,27 @@ export async function GET(request: Request) {
     searchParams.get("date") || new Date().toISOString().split("T")[0];
 
   try {
-    const res = await fetch(
-      `${tsdbBase()}/eventsday.php?d=${dateStr}&s=Soccer`,
-      { next: { revalidate: 30 } }
-    );
+    const [eventsRes, liveIds] = await Promise.all([
+      fetch(`${tsdbBase()}/eventsday.php?d=${dateStr}&s=Soccer`, TSDB_FETCH),
+      fetchLiveEventIds(),
+    ]);
 
-    if (!res.ok) {
-      throw new Error(`API returned ${res.status}`);
+    if (!eventsRes.ok) {
+      throw new Error(`API returned ${eventsRes.status}`);
     }
 
-    const rawData = await res.json();
+    const rawData = await eventsRes.json();
 
     if (!rawData.events) {
-      return NextResponse.json({ matches: [] });
+      return NextResponse.json({ matches: [], fetchedAt: new Date().toISOString() });
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cleanMatches = rawData.events.map((f: any) => {
       const strStatus = String(f.strStatus || "");
       const strProgress = String(f.strProgress || "");
-
-      let status = "scheduled";
-      if (
-        strStatus === "Match Finished" ||
-        strStatus === "FT" ||
-        strStatus === "AET" ||
-        strStatus === "PEN"
-      ) {
-        status = "final";
-      } else if (
-        strStatus === "In Progress" ||
-        strStatus === "HT" ||
-        strStatus === "1H" ||
-        strStatus === "2H" ||
-        (strProgress && strProgress !== "0" && strProgress !== "")
-      ) {
-        status = "live";
-      }
-
-      let liveMin = "";
-      if (status === "live") {
-        if (strStatus === "HT") liveMin = "HT";
-        else if (strProgress && strProgress !== "0") liveMin = `${strProgress}'`;
-        else if (strStatus === "1H" || strStatus === "2H") liveMin = strStatus;
-        else liveMin = "LIVE";
-      }
+      const leagueName = f.strLeague || "";
+      const status = resolveMatchStatus(f, liveIds);
 
       const homeScore =
         f.intHomeScore !== null && f.intHomeScore !== ""
@@ -231,53 +185,67 @@ export async function GET(request: Request) {
           ? Number(f.intAwayScore)
           : null;
 
-      const timeline = parseEventTimelineFields(f);
+      let events = parseEventFields(f);
 
       return {
         id: f.idEvent,
         status,
-        liveMin,
+        liveMin: resolveLiveMinute(status, strStatus, strProgress),
         kick: f.strTime ? String(f.strTime).substring(0, 5) : "TBD",
-        league: f.strLeague,
+        dateEvent: f.dateEvent || dateStr,
+        league: leagueName,
         leagueId: f.idLeague,
-        leagueName: f.strLeague,
+        leagueName,
         leagueLogo: f.strLeagueBadge || "",
+        isInternational: isInternationalLeague(leagueName),
         home: f.strHomeTeam,
         homeAbbr: String(f.strHomeTeam || "").slice(0, 3).toUpperCase(),
-        homeLogo: f.strHomeTeamBadge || "",
+        homeLogo: teamIconUrl(f.strHomeTeam, f.strHomeTeamBadge || "", leagueName),
+        homeFlag: teamIconUrl(f.strHomeTeam, f.strHomeTeamBadge || "", leagueName),
         away: f.strAwayTeam,
         awayAbbr: String(f.strAwayTeam || "").slice(0, 3).toUpperCase(),
-        awayLogo: f.strAwayTeamBadge || "",
+        awayLogo: teamIconUrl(f.strAwayTeam, f.strAwayTeamBadge || "", leagueName),
+        awayFlag: teamIconUrl(f.strAwayTeam, f.strAwayTeamBadge || "", leagueName),
         score: { home: homeScore ?? 0, away: awayScore ?? 0 },
         hasScore: homeScore !== null && awayScore !== null,
         venue: f.strVenue || "",
-        timeline,
+        events,
+        timeline: events,
       };
     });
 
     const enrichTargets = cleanMatches.filter(
-      (m: { status: string; timeline: TimelineEvent[] }) =>
-        (m.status === "live" || m.status === "final") && m.timeline.length === 0
+      (m: { status: string; events: MatchEvent[] }) =>
+        (m.status === "live" || m.status === "final") && m.events.length === 0
     );
 
     if (enrichTargets.length > 0) {
-      const batchSize = 8;
+      const batchSize = 10;
       for (let i = 0; i < enrichTargets.length; i += batchSize) {
         const batch = enrichTargets.slice(i, i + batchSize);
         const timelines = await Promise.all(
           batch.map((m: { id: string }) => fetchTimelineForEvent(m.id))
         );
-        batch.forEach((m: { timeline: TimelineEvent[] }, idx: number) => {
-          if (timelines[idx].length > 0) {
-            m.timeline = timelines[idx];
+        batch.forEach(
+          (
+            m: { events: MatchEvent[]; timeline: MatchEvent[] },
+            idx: number
+          ) => {
+            if (timelines[idx].length > 0) {
+              m.events = timelines[idx];
+              m.timeline = timelines[idx];
+            }
           }
-        });
+        );
       }
     }
 
-    return NextResponse.json({ matches: cleanMatches });
+    return NextResponse.json({
+      matches: cleanMatches,
+      fetchedAt: new Date().toISOString(),
+    });
   } catch (err) {
     console.error("Match fetch error:", err);
-    return NextResponse.json({ matches: [] });
+    return NextResponse.json({ matches: [], fetchedAt: new Date().toISOString() });
   }
 }

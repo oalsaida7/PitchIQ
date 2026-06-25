@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 
+import { CLAUDE_MODEL } from "@/lib/tsdb";
+
 const client = new Anthropic();
 
 export async function POST(request: Request) {
@@ -9,7 +11,7 @@ export async function POST(request: Request) {
     if (!query?.trim()) return NextResponse.json({ error: "Query required" }, { status: 400 });
 
     const message = await client.messages.create({
-      model: "claude-3-haiku-20240307",
+      model: CLAUDE_MODEL,
       max_tokens: 400,
       messages: [{
         role: "user",

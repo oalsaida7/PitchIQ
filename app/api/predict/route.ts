@@ -1,5 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import {
+  CLAUDE_MODEL,
+  fetchJsonSafe,
+  gridForPlayer,
+  mapRole,
+  positionToRow,
+  tsdbBase,
+} from "@/lib/tsdb";
 
 const client = new Anthropic();
 
@@ -8,79 +16,33 @@ interface LineupPlayer {
   name: string;
   role: string;
   grid: string;
+  side: "home" | "away";
 }
 
-function tsdbBase(): string {
-  const apiKey = process.env.THESPORTSDB_KEY;
-  if (!apiKey) throw new Error("THESPORTSDB_KEY not configured");
-  return `https://www.thesportsdb.com/api/v1/json/${apiKey}`;
-}
-
-async function askHaikuJSON(prompt: string, maxTokens = 700): Promise<Record<string, unknown>> {
-  const msg = await client.messages.create({
-    model: "claude-3-haiku-20240307",
-    max_tokens: maxTokens,
-    messages: [{ role: "user", content: prompt }],
-  });
-  const rawText = msg.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; text: string }).text)
-    .join("");
-  const m = rawText.match(/\{[\s\S]*\}/);
-  if (!m) return {};
+async function askHaikuJSON(
+  prompt: string,
+  maxTokens = 700
+): Promise<Record<string, unknown>> {
   try {
-    return JSON.parse(m[0]);
-  } catch {
+    const msg = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const rawText = msg.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return {};
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.error("Haiku JSON error:", err);
     return {};
   }
 }
 
-function positionToRow(pos: string): number {
-  const p = (pos || "").toLowerCase();
-  if (p.includes("goalkeeper") || p === "gk") return 1;
-  if (p.includes("defender") || p.includes("back")) return 2;
-  if (p.includes("mid")) return 3;
-  return 4;
-}
-
-function mapRole(pos: string): string {
-  const p = (pos || "").toLowerCase();
-  if (p.includes("goalkeeper")) return "GK";
-  if (p.includes("defender") || p.includes("back")) return "DEF";
-  if (p.includes("mid")) return "MID";
-  return "FWD";
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapLineupSide(players: any[], isHome: boolean): LineupPlayer[] {
-  const starters = players.filter(
-    (p) => (p.strHome === "Yes") === isHome && p.strSubstitute === "No"
-  );
-
-  const rowBuckets: Record<number, typeof starters> = { 1: [], 2: [], 3: [], 4: [] };
-  starters.forEach((p) => {
-    const row = positionToRow(p.strPosition);
-    rowBuckets[row].push(p);
-  });
-
-  return starters.map((p) => {
-    const row = positionToRow(p.strPosition);
-    const rowPlayers = rowBuckets[row];
-    const idx = rowPlayers.indexOf(p);
-    const colCount = rowPlayers.length;
-    const col =
-      colCount <= 1 ? 3 : Math.min(5, Math.max(1, Math.round((idx / (colCount - 1)) * 4) + 1));
-
-    return {
-      num: Number(p.intSquadNumber) || 0,
-      name: p.strPlayer || "Unknown",
-      role: mapRole(p.strPosition),
-      grid: `${row}:${col}`,
-    };
-  });
-}
-
-function inferFormation(lineup: LineupPlayer[]): string {
+function inferFormationFromLineup(lineup: LineupPlayer[]): string {
   const counts = { def: 0, mid: 0, fwd: 0 };
   lineup.forEach((p) => {
     if (p.role === "DEF") counts.def++;
@@ -91,42 +53,156 @@ function inferFormation(lineup: LineupPlayer[]): string {
   return `${counts.def || 4}-${counts.mid || 3}-${counts.fwd || 3}`;
 }
 
-async function fetchLineup(matchId: string) {
-  const res = await fetch(`${tsdbBase()}/lookuplineup.php?id=${matchId}`, {
-    next: { revalidate: 60 },
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapLineupSide(players: any[], side: "home" | "away"): LineupPlayer[] {
+  const isHome = side === "home";
+  const starters = players.filter(
+    (p) => (p.strHome === "Yes") === isHome && p.strSubstitute === "No"
+  );
+
+  const rowBuckets: Record<number, typeof starters> = { 1: [], 2: [], 3: [], 4: [] };
+  starters.forEach((p) => {
+    rowBuckets[positionToRow(p.strPosition)].push(p);
   });
-  if (!res.ok) return { homeLineup: [], awayLineup: [], hasLineup: false, isReal: true };
-  const data = await res.json();
-  if (!data.lineup?.length) {
-    return { homeLineup: [], awayLineup: [], hasLineup: false, isReal: true };
+
+  return starters.map((p) => {
+    const row = positionToRow(p.strPosition);
+    const rowPlayers = rowBuckets[row];
+    const idx = rowPlayers.indexOf(p);
+    return {
+      num: Number(p.intSquadNumber) || 0,
+      name: p.strPlayer || "Unknown",
+      role: mapRole(p.strPosition),
+      grid: gridForPlayer(row, idx, rowPlayers.length, side),
+      side,
+    };
+  });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapSubs(players: any[], side: "home" | "away"): string[] {
+  const isHome = side === "home";
+  return players
+    .filter((p) => (p.strHome === "Yes") === isHome && p.strSubstitute === "Yes")
+    .map((p) => p.strPlayer || "Unknown");
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseEventLineupStrings(ev: any): any[] {
+  const players: Array<Record<string, string>> = [];
+  const sides = [
+    {
+      isHome: true,
+      groups: [
+        { pos: "Goalkeeper", raw: ev.strHomeLineupGoalkeeper },
+        { pos: "Defender", raw: ev.strHomeLineupDefense },
+        { pos: "Midfielder", raw: ev.strHomeLineupMidfield },
+        { pos: "Forward", raw: ev.strHomeLineupForward },
+      ],
+      subs: ev.strHomeLineupSubstitutes,
+    },
+    {
+      isHome: false,
+      groups: [
+        { pos: "Goalkeeper", raw: ev.strAwayLineupGoalkeeper },
+        { pos: "Defender", raw: ev.strAwayLineupDefense },
+        { pos: "Midfielder", raw: ev.strAwayLineupMidfield },
+        { pos: "Forward", raw: ev.strAwayLineupForward },
+      ],
+      subs: ev.strAwayLineupSubstitutes,
+    },
+  ];
+
+  for (const side of sides) {
+    let num = side.isHome ? 1 : 12;
+    for (const group of side.groups) {
+      if (!group.raw) continue;
+      String(group.raw)
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean)
+        .forEach((name) => {
+          players.push({
+            strHome: side.isHome ? "Yes" : "No",
+            strSubstitute: "No",
+            strPosition: group.pos,
+            strPlayer: name,
+            intSquadNumber: String(num++),
+          });
+        });
+    }
+    if (side.subs) {
+      String(side.subs)
+        .split(",")
+        .map((n) => n.trim())
+        .filter(Boolean)
+        .forEach((name) => {
+          players.push({
+            strHome: side.isHome ? "Yes" : "No",
+            strSubstitute: "Yes",
+            strPosition: "Substitute",
+            strPlayer: name,
+            intSquadNumber: String(num++),
+          });
+        });
+    }
   }
 
-  const homeLineup = mapLineupSide(data.lineup, true);
-  const awayLineup = mapLineupSide(data.lineup, false);
+  return players;
+}
+
+async function fetchLineup(matchId: string) {
+  const data = await fetchJsonSafe(`${tsdbBase()}/lookuplineup.php?id=${matchId}`);
+  let players = (data.lineup as unknown[]) || [];
+
+  if (!players.length) {
+    const evData = await fetchJsonSafe(`${tsdbBase()}/lookupevent.php?id=${matchId}`);
+    const ev = (evData.events as unknown[])?.[0];
+    if (ev) {
+      players = parseEventLineupStrings(ev);
+    }
+  }
+
+  if (!players.length) {
+    return {
+      homeLineup: [],
+      awayLineup: [],
+      homeSubs: [],
+      awaySubs: [],
+      hasLineup: false,
+      isReal: true,
+      _loaded: true,
+    };
+  }
+
+  const homeLineup = mapLineupSide(players, "home");
+  const awayLineup = mapLineupSide(players, "away");
 
   return {
-    homeFormation: inferFormation(homeLineup),
-    awayFormation: inferFormation(awayLineup),
+    homeFormation: inferFormationFromLineup(homeLineup),
+    awayFormation: inferFormationFromLineup(awayLineup),
     homeLineup,
     awayLineup,
+    homeSubs: mapSubs(players, "home"),
+    awaySubs: mapSubs(players, "away"),
     hasLineup: homeLineup.length > 0 || awayLineup.length > 0,
     isReal: true,
+    _loaded: true,
   };
 }
 
 async function fetchStats(matchId: string) {
-  const res = await fetch(`${tsdbBase()}/lookupeventstats.php?id=${matchId}`, {
-    next: { revalidate: 30 },
-  });
-  if (!res.ok) return { hasStats: false, isReal: true };
-  const data = await res.json();
-  if (!data.eventstats?.length) return { hasStats: false, isReal: true };
+  const data = await fetchJsonSafe(
+    `${tsdbBase()}/lookupeventstats.php?id=${matchId}`
+  );
+  const eventstats = (data.eventstats as Array<Record<string, string>>) || [];
+
+  if (!eventstats.length) {
+    return { hasStats: false, isReal: true, _loaded: true };
+  }
 
   const get = (statName: string) => {
-    const row = data.eventstats.find(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (s: any) => s.strStat === statName
-    );
+    const row = eventstats.find((s) => s.strStat === statName);
     return {
       home: Number(row?.intHome ?? 0),
       away: Number(row?.intAway ?? 0),
@@ -147,6 +223,7 @@ async function fetchStats(matchId: string) {
     passes: get("Total passes"),
     hasStats: true,
     isReal: true,
+    _loaded: true,
   };
 }
 
@@ -159,98 +236,68 @@ async function fetchTable(
   const isWC = (leagueName || "").toLowerCase().includes("world cup");
   const seasons = isWC
     ? ["2026", "2025", "2022"]
-    : ["2025-2026", "2025", "2024-2025", "2024"];
+    : ["2025", "2025-2026", "2024-2025", "2024"];
 
   for (const season of seasons) {
-    try {
-      const res = await fetch(
-        `${tsdbBase()}/lookuptable.php?l=${leagueId}&s=${season}`,
-        { next: { revalidate: 300 } }
-      );
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (!text.trim()) continue;
-      const data = JSON.parse(text);
-      if (!data.table?.length) continue;
+    const data = await fetchJsonSafe(
+      `${tsdbBase()}/lookuptable.php?l=${leagueId}&s=${season}`
+    );
+    const table = (data.table as Array<Record<string, string>>) || [];
+    if (!table.length) continue;
 
-      let rows = data.table;
+    let rows = table;
 
-      if (isWC) {
-        const homeGroup = rows.find(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (t: any) => t.strTeam === home
-        )?.strGroup;
-        const awayGroup = rows.find(
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (t: any) => t.strTeam === away
-        )?.strGroup;
-        const group = homeGroup || awayGroup;
-        if (group) {
-          rows = rows.filter(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (t: any) => t.strGroup === group
-          );
-        } else {
-          rows = rows
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .filter((t: any) => t.strGroup)
-            .slice(0, 4);
-        }
+    if (isWC) {
+      const homeGroup = rows.find((t) => t.strTeam === home)?.strGroup;
+      const awayGroup = rows.find((t) => t.strTeam === away)?.strGroup;
+      const group = homeGroup || awayGroup;
+      if (group) {
+        rows = rows.filter((t) => t.strGroup === group);
+      } else {
+        rows = rows.filter((t) => t.strGroup).slice(0, 4);
       }
-
-      return {
-        teams: rows
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .map((t: any) => ({
-            pos: Number(t.intRank),
-            name: t.strTeam,
-            played: Number(t.intPlayed),
-            won: Number(t.intWin),
-            drawn: Number(t.intDraw),
-            lost: Number(t.intLoss),
-            gd:
-              Number(t.intGoalDifference) >= 0
-                ? `+${t.intGoalDifference}`
-                : String(t.intGoalDifference),
-            pts: Number(t.intPoints),
-            group: t.strGroup || undefined,
-          }))
-          .sort(
-            (
-              a: { pos: number; group?: string },
-              b: { pos: number; group?: string }
-            ) => a.pos - b.pos
-          ),
-        isReal: true,
-        hasTable: true,
-        isWorldCup: isWC,
-        groupName: isWC ? rows[0]?.strGroup : undefined,
-      };
-    } catch {
-      continue;
     }
+
+    return {
+      teams: rows
+        .map((t) => ({
+          pos: Number(t.intRank),
+          name: t.strTeam,
+          played: Number(t.intPlayed),
+          won: Number(t.intWin),
+          drawn: Number(t.intDraw),
+          lost: Number(t.intLoss),
+          gd:
+            Number(t.intGoalDifference) >= 0
+              ? `+${t.intGoalDifference}`
+              : String(t.intGoalDifference),
+          pts: Number(t.intPoints),
+          group: t.strGroup || undefined,
+        }))
+        .sort((a, b) => a.pos - b.pos),
+      isReal: true,
+      hasTable: true,
+      isWorldCup: isWC,
+      groupName: isWC ? rows[0]?.strGroup : undefined,
+      _loaded: true,
+    };
   }
 
-  return { teams: [], isReal: true, hasTable: false };
+  return { teams: [], isReal: true, hasTable: false, _loaded: true };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapTimelineToCommentary(timeline: any[]) {
-  return timeline.map((e) => {
-    let type = "normal";
-    if (["goal", "penalty", "og"].includes(e.type)) type = "goal";
-    else if (e.type === "yellow" || e.type === "card") type = "card";
-    else if (e.type === "red" || e.type === "redcard") type = "redcard";
-    else if (e.type === "subst") type = "normal";
+function mapEventsToCommentary(events: any[]) {
+  return events.map((e) => {
+    let uiType = "normal";
+    if (e.type === "goal") uiType = "goal";
+    else if (e.type === "card") uiType = "card";
+    else if (e.type === "sub") uiType = "normal";
 
     return {
       min: e.min || "—",
-      text:
-        e.text ||
-        (e.type === "goal"
-          ? `Goal — ${e.playerName || "Unknown"}`
-          : e.playerName || "Match event"),
-      type,
+      text: e.label || e.text || e.playerName || "Match event",
+      type: uiType,
       team: e.team || null,
     };
   });
@@ -259,71 +306,73 @@ function mapTimelineToCommentary(timeline: any[]) {
 async function fetchCommentary(
   matchId: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  existingTimeline: any[]
+  existingEvents: any[]
 ) {
-  if (existingTimeline?.length) {
-    return {
-      events: mapTimelineToCommentary(existingTimeline),
-      isReal: true,
-    };
-  }
+  const source =
+    existingEvents?.length > 0
+      ? existingEvents
+      : mapApiTimelineRaw(
+          ((await fetchJsonSafe(`${tsdbBase()}/lookuptimeline.php?id=${matchId}`))
+            .timeline as unknown[]) || []
+        );
 
-  const res = await fetch(`${tsdbBase()}/lookuptimeline.php?id=${matchId}`, {
-    next: { revalidate: 30 },
-  });
-  if (!res.ok) return { events: [], isReal: true };
-  const data = await res.json();
-  if (!data.timeline?.length) return { events: [], isReal: true };
+  return {
+    events: mapEventsToCommentary(source),
+    isReal: true,
+    _loaded: true,
+  };
+}
 
-  const events = data.timeline.map(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (t: any) => {
-      const team = t.strHome === "Yes" ? "home" : "away";
-      const min = String(t.intTime ?? "");
-      const kind = (t.strTimeline || "").toLowerCase();
-      const detail = (t.strTimelineDetail || "").toLowerCase();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiTimelineRaw(rows: any[]) {
+  return rows.map((t) => {
+    const team = t.strHome === "Yes" ? "home" : "away";
+    const min = String(t.intTime ?? "");
+    const kind = (t.strTimeline || "").toLowerCase();
+    const detail = (t.strTimelineDetail || "").toLowerCase();
 
-      if (kind === "goal") {
-        const assist = t.strAssist?.trim();
-        return {
-          min,
-          text: assist
-            ? `Goal — ${t.strPlayer} (assist: ${assist})`
-            : `Goal — ${t.strPlayer || "Unknown"}`,
-          type: "goal",
-          team,
-        };
-      }
-      if (kind === "card") {
-        const isRed = detail.includes("red");
-        return {
-          min,
-          text: `${isRed ? "Red" : "Yellow"} card — ${t.strPlayer || "Unknown"}`,
-          type: isRed ? "redcard" : "card",
-          team,
-        };
-      }
-      if (kind === "subst" || kind === "substitution") {
-        const onPlayer = t.strAssist?.trim() || t.strTimelineDetail?.trim() || "";
-        return {
-          min,
-          text: onPlayer
-            ? `Sub: ${t.strPlayer} → ${onPlayer}`
-            : `Sub: ${t.strPlayer || "Unknown"}`,
-          type: "normal",
-          team,
-        };
-      }
+    if (kind === "goal") {
+      const assist = t.strAssist?.trim();
       return {
-        min,
-        text: t.strPlayer || t.strTimeline || "Match event",
-        type: "normal",
+        type: "goal",
         team,
+        min,
+        playerName: t.strPlayer || "",
+        label: assist
+          ? `Goal — ${t.strPlayer} (assist: ${assist})`
+          : `Goal — ${t.strPlayer || "Unknown"}`,
       };
     }
-  );
-
-  return { events, isReal: true };
+    if (kind === "card") {
+      const isRed = detail.includes("red");
+      return {
+        type: "card",
+        team,
+        min,
+        playerName: t.strPlayer || "",
+        label: `${isRed ? "Red" : "Yellow"} card — ${t.strPlayer || "Unknown"}`,
+      };
+    }
+    if (kind === "subst" || kind === "substitution") {
+      const onPlayer = t.strAssist?.trim() || t.strTimelineDetail?.trim() || "";
+      return {
+        type: "sub",
+        team,
+        min,
+        playerName: t.strPlayer || "",
+        label: onPlayer
+          ? `Sub: ${t.strPlayer} → ${onPlayer}`
+          : `Sub: ${t.strPlayer || "Unknown"}`,
+      };
+    }
+    return {
+      type: "goal",
+      team,
+      min,
+      playerName: t.strPlayer || "",
+      label: t.strPlayer || "Event",
+    };
+  });
 }
 
 export async function POST(request: Request) {
@@ -352,7 +401,10 @@ export async function POST(request: Request) {
     }
 
     if (type === "commentary") {
-      const data = await fetchCommentary(String(id), match.timeline || []);
+      const data = await fetchCommentary(
+        String(id),
+        match.events || match.timeline || []
+      );
       return NextResponse.json({ data });
     }
 
@@ -361,20 +413,19 @@ export async function POST(request: Request) {
 Respond ONLY valid JSON no backticks:
 {"prediction":"2-1","homeWin":55,"draw":25,"awayWin":20,"keyBattle":"One sentence on the key tactical battle.","homeScorerPred":"Likely scorer name (min') — header/penalty/open play","awayScorerPred":"Likely scorer name (min') — open play","homeForm":["W","W","D","L","W"],"awayForm":["L","W","W","W","D"],"h2h":[{"date":"May 2025","result":"${home} 2-1 ${away}","winner":"home"},{"date":"Dec 2024","result":"${away} 1-0 ${home}","winner":"away"},{"date":"Apr 2024","result":"Draw 1-1","winner":"draw"}],"venue":"${venue || "Stadium Name, City"}","referee":"Referee Name","competition":"${leagueName}","homeTactic":"2 sentences on ${home} expected tactical setup.","awayTactic":"2 sentences on ${away} expected approach.","reasoning":"3 sentences of analytical reasoning supporting the prediction."}`;
       const data = await askHaikuJSON(prompt, 700);
-      return NextResponse.json({ data });
+      return NextResponse.json({ data: { ...data, _loaded: true } });
     }
 
     if (type === "review") {
-      const realTimeline: Array<{
+      const realEvents: Array<{
         min: string;
         team: string | null;
         type: string;
+        label?: string;
         text?: string;
         playerName?: string;
-      }> = match.timeline || [];
-      const realGoals = realTimeline.filter((e) =>
-        ["goal", "penalty", "og"].includes(e.type)
-      );
+      }> = match.events || match.timeline || [];
+      const realGoals = realEvents.filter((e) => e.type === "goal");
       const scorersContext =
         realGoals.length > 0
           ? `Real goals: ${realGoals
@@ -396,20 +447,15 @@ Respond ONLY valid JSON no backticks:
         name: g.playerName || "Unknown",
         team: g.team === "home" ? home : away,
         minute: g.min,
-        type:
-          g.type === "penalty"
-            ? "Penalty"
-            : g.type === "og"
-            ? "Own Goal"
-            : "Goal",
+        type: "Goal",
         assist: "",
       }));
-      return NextResponse.json({ data: reviewData });
+      return NextResponse.json({ data: { ...reviewData, _loaded: true } });
     }
 
-    return NextResponse.json({ data: {} });
+    return NextResponse.json({ data: { _loaded: true } });
   } catch (err) {
     console.error("predict error:", err);
-    return NextResponse.json({ data: { _error: true } });
+    return NextResponse.json({ data: { _error: true, _loaded: true } });
   }
 }

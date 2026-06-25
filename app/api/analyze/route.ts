@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
+import { CLAUDE_MODEL } from "@/lib/tsdb";
 
 const client = new Anthropic();
 
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
         : `Upcoming fixture. Win probabilities: ${home} ${prob?.home ?? "?"}%, Draw ${prob?.draw ?? "?"}%, ${away} ${prob?.away ?? "?"}%`;
 
     const message = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: CLAUDE_MODEL,
       max_tokens: 300,
       messages: [
         {

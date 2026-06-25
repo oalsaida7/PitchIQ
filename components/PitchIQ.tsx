@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { pitchPositionFromGrid } from "@/lib/tsdb";
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
@@ -32,6 +33,68 @@ const rcBg = (r: number) =>
     : "rgba(239,68,68,0.12)";
 const attrColor = (v: number) =>
   v >= 80 ? C.cyan : v >= 65 ? C.amber : C.red;
+
+function TeamBadge({
+  src,
+  abbr,
+  international,
+}: {
+  src?: string;
+  abbr: string;
+  international?: boolean;
+}) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt=""
+        style={{
+          width: international ? 28 : 24,
+          height: international ? 20 : 24,
+          objectFit: international ? "cover" : "contain",
+          flexShrink: 0,
+          borderRadius: international ? 2 : 0,
+          border: international ? `1px solid ${C.border2}` : "none",
+        }}
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        width: 24,
+        height: 24,
+        borderRadius: "50%",
+        background: C.c3,
+        border: `1px solid ${C.border2}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 8,
+        fontWeight: 700,
+        color: C.iceDim,
+        flexShrink: 0,
+        fontFamily: "'JetBrains Mono',monospace",
+      }}
+    >
+      {abbr}
+    </div>
+  );
+}
+
+function matchEvents(match: { events?: unknown[]; timeline?: unknown[] }) {
+  return (match.events || match.timeline || []) as Array<{
+    type: string;
+    team?: string;
+    min?: string;
+    label?: string;
+    text?: string;
+    playerName?: string;
+  }>;
+}
 
 // ─── Shared atoms ──────────────────────────────────────────────────────────────
 function Dots() {
@@ -464,24 +527,6 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
 
   // ── LINEUP ───────────────────────────────────────────────────────────────────
   if (tab === "lineup") {
-    const parseGrid = (
-      gridStr: string,
-      isAway: boolean
-    ): { top: string; left: string } => {
-      if (!gridStr) return { top: "50%", left: "50%" };
-      const [line, col] = gridStr.split(":").map(Number);
-      
-      // Explicitly define as numbers so TypeScript doesn't lock them to 4 and 5
-      const maxLine: number = 4;
-      const maxCol: number = 5;
-      
-      let topPct = ((line - 1) / (maxLine - 1)) * 80 + 10;
-      if (isAway) topPct = 100 - topPct;
-      const leftPct =
-        maxCol === 1 ? 50 : ((col - 1) / (maxCol - 1)) * 76 + 12;
-      return { top: `${topPct}%`, left: `${leftPct}%` };
-    };
-
     const isRealData = data.isReal === true;
     const hasPlayers =
       (data.homeLineup?.length || 0) > 0 || (data.awayLineup?.length || 0) > 0;
@@ -502,6 +547,92 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
         </div>
       );
     }
+
+    const renderPitchPlayer = (
+      p: { num: number; name: string; grid?: string; pred?: string },
+      side: "home" | "away",
+      i: number
+    ) => {
+      const pos = pitchPositionFromGrid(
+        p.grid || `${side === "home" ? 2 : 6}:${(i % 5) + 1}`,
+        side
+      );
+      const rating = p.pred ? parseFloat(p.pred) : 0;
+      const borderCol = side === "home" ? C.cyan : C.blue;
+      const lastName = String(p.name).split(" ").pop() || p.name;
+
+      return (
+        <div
+          key={`${side}-${i}-${p.num}`}
+          style={{
+            position: "absolute",
+            top: pos.top,
+            left: pos.left,
+            transform: "translate(-50%,-50%)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            zIndex: side === "home" ? 12 : 11,
+            minWidth: 52,
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              position: "relative",
+              width: 30,
+              height: 30,
+              borderRadius: "50%",
+              background: C.charcoal,
+              border: `2px solid ${borderCol}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#fff",
+              boxShadow: "0 2px 6px rgba(0,0,0,0.45)",
+            }}
+          >
+            {p.num}
+            {p.pred && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: -8,
+                  right: -18,
+                  fontSize: 8,
+                  fontWeight: 800,
+                  padding: "1px 3px",
+                  borderRadius: 3,
+                  background: rcBg(rating),
+                  color: rc(rating),
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {p.pred}
+              </span>
+            )}
+          </div>
+          <span
+            style={{
+              fontSize: 9,
+              color: C.ice,
+              fontWeight: 600,
+              marginTop: 3,
+              textShadow: "0 1px 4px #000",
+              whiteSpace: "nowrap",
+              maxWidth: 72,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              padding: "0 2px",
+            }}
+          >
+            {lastName}
+          </span>
+        </div>
+      );
+    };
 
     return (
       <div className="animate-in">
@@ -550,28 +681,28 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
           </span>
         </div>
 
-        {/* Pitch canvas */}
+        {/* Pitch canvas — home top half, away bottom half */}
         <div
           style={{
             position: "relative",
             width: "100%",
-            height: 380,
-            background: "#192e19",
+            height: 420,
+            background: "linear-gradient(180deg,#1a331a 0%,#1a331a 49%,#142814 50%,#1a331a 51%,#1a331a 100%)",
             borderRadius: 8,
             border: `1px solid ${C.border}`,
             overflow: "hidden",
             marginBottom: 14,
           }}
         >
-          {/* Pitch markings */}
           <div
             style={{
               position: "absolute",
               top: "50%",
               left: 0,
               right: 0,
-              height: 1,
-              background: "rgba(255,255,255,0.13)",
+              height: 2,
+              background: "rgba(255,255,255,0.18)",
+              zIndex: 1,
             }}
           />
           <div
@@ -580,203 +711,74 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
               top: "50%",
               left: "50%",
               transform: "translate(-50%,-50%)",
-              width: 68,
-              height: 68,
+              width: 72,
+              height: 72,
               border: "1px solid rgba(255,255,255,0.13)",
               borderRadius: "50%",
+              zIndex: 1,
             }}
           />
           <div
             style={{
               position: "absolute",
-              top: "8%",
-              left: "22%",
-              right: "22%",
-              height: "20%",
+              top: "4%",
+              left: "20%",
+              right: "20%",
+              height: "18%",
               border: "1px solid rgba(255,255,255,0.1)",
+              zIndex: 1,
             }}
           />
           <div
             style={{
               position: "absolute",
-              bottom: "8%",
-              left: "22%",
-              right: "22%",
-              height: "20%",
+              bottom: "4%",
+              left: "20%",
+              right: "20%",
+              height: "18%",
               border: "1px solid rgba(255,255,255,0.1)",
+              zIndex: 1,
             }}
           />
-          {/* Home players */}
+          <div
+            style={{
+              position: "absolute",
+              top: 6,
+              left: 8,
+              fontSize: 9,
+              fontWeight: 700,
+              color: C.cyan,
+              opacity: 0.7,
+              zIndex: 2,
+            }}
+          >
+            {match.home}
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              bottom: 6,
+              right: 8,
+              fontSize: 9,
+              fontWeight: 700,
+              color: C.blue,
+              opacity: 0.7,
+              zIndex: 2,
+            }}
+          >
+            {match.away}
+          </div>
           {(data.homeLineup || []).map(
             (
-              p: {
-                num: number;
-                name: string;
-                grid?: string;
-                pred?: string;
-                role?: string;
-              },
+              p: { num: number; name: string; grid?: string; pred?: string },
               i: number
-            ) => {
-              const pos = parseGrid(
-                p.grid || `${Math.floor(i / 3) + 1}:${(i % 5) + 1}`,
-                false
-              );
-              const rating = p.pred ? parseFloat(p.pred) : 0;
-              return (
-                <div
-                  key={i}
-                  style={{
-                    position: "absolute",
-                    top: pos.top,
-                    left: pos.left,
-                    transform: "translate(-50%,-50%)",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    zIndex: 10,
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "relative",
-                      width: 28,
-                      height: 28,
-                      borderRadius: "50%",
-                      background: C.charcoal,
-                      border: `2px solid ${C.cyan}`,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: "#fff",
-                    }}
-                  >
-                    {p.num}
-                    {p.pred && (
-                      <span
-                        style={{
-                          position: "absolute",
-                          top: -7,
-                          right: -16,
-                          fontSize: 8,
-                          fontWeight: 800,
-                          padding: "1px 3px",
-                          borderRadius: 3,
-                          background: rcBg(rating),
-                          color: rc(rating),
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {p.pred}
-                      </span>
-                    )}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 8,
-                      color: C.ice,
-                      fontWeight: 600,
-                      marginTop: 2,
-                      textShadow: "0 1px 3px #000",
-                      whiteSpace: "nowrap",
-                      maxWidth: 58,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {String(p.name).split(" ").pop()}
-                  </span>
-                </div>
-              );
-            }
+            ) => renderPitchPlayer(p, "home", i)
           )}
-          {/* Away players */}
           {(data.awayLineup || []).map(
             (
-              p: {
-                num: number;
-                name: string;
-                grid?: string;
-                pred?: string;
-                role?: string;
-              },
+              p: { num: number; name: string; grid?: string; pred?: string },
               i: number
-            ) => {
-              const pos = parseGrid(
-                p.grid || `${Math.floor(i / 3) + 1}:${(i % 5) + 1}`,
-                true
-              );
-              const rating = p.pred ? parseFloat(p.pred) : 0;
-              return (
-                <div
-                  key={i}
-                  style={{
-                    position: "absolute",
-                    top: pos.top,
-                    left: pos.left,
-                    transform: "translate(-50%,-50%)",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    zIndex: 10,
-                  }}
-                >
-                  <div
-                    style={{
-                      position: "relative",
-                      width: 28,
-                      height: 28,
-                      borderRadius: "50%",
-                      background: C.charcoal,
-                      border: `2px solid ${C.blue}`,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: "#fff",
-                    }}
-                  >
-                    {p.num}
-                    {p.pred && (
-                      <span
-                        style={{
-                          position: "absolute",
-                          top: -7,
-                          right: -16,
-                          fontSize: 8,
-                          fontWeight: 800,
-                          padding: "1px 3px",
-                          borderRadius: 3,
-                          background: rcBg(rating),
-                          color: rc(rating),
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {p.pred}
-                      </span>
-                    )}
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 8,
-                      color: C.ice,
-                      fontWeight: 600,
-                      marginTop: 2,
-                      textShadow: "0 1px 3px #000",
-                      whiteSpace: "nowrap",
-                      maxWidth: 58,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {String(p.name).split(" ").pop()}
-                  </span>
-                </div>
-              );
-            }
+            ) => renderPitchPlayer(p, "away", i)
           )}
         </div>
 
@@ -1587,6 +1589,7 @@ function MatchCard({ match }: { match: any }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ match, type: tab }),
+          cache: "no-store",
         });
         const payload = await res.json();
         const data = payload?.data;
@@ -1611,9 +1614,7 @@ function MatchCard({ match }: { match: any }) {
     isFinal && match.hasScore && match.score.away > match.score.home;
 
   // For live games that have a real score but haven't been marked final yet
-  const showScore =
-    isFinal ||
-    (isLive && match.hasScore && (match.score.home > 0 || match.score.away > 0));
+  const showScore = (isFinal || isLive) && match.hasScore;
 
   return (
     <div
@@ -1645,39 +1646,11 @@ function MatchCard({ match }: { match: any }) {
       >
         {/* Home */}
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          {match.homeLogo ? (
-            <img
-              src={match.homeLogo}
-              alt=""
-              style={{
-                width: 24,
-                height: 24,
-                objectFit: "contain",
-                flexShrink: 0,
-              }}
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-          ) : (
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: "50%",
-                background: C.c3,
-                border: `1px solid ${C.border2}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 8,
-                fontWeight: 700,
-                color: C.iceDim,
-                flexShrink: 0,
-                fontFamily: "'JetBrains Mono',monospace",
-              }}
-            >
-              {match.homeAbbr}
-            </div>
-          )}
+          <TeamBadge
+            src={match.homeFlag || match.homeLogo}
+            abbr={match.homeAbbr}
+            international={match.isInternational}
+          />
           <span
             style={{
               fontSize: 13,
@@ -1769,39 +1742,11 @@ function MatchCard({ match }: { match: any }) {
             flexDirection: "row-reverse",
           }}
         >
-          {match.awayLogo ? (
-            <img
-              src={match.awayLogo}
-              alt=""
-              style={{
-                width: 24,
-                height: 24,
-                objectFit: "contain",
-                flexShrink: 0,
-              }}
-              onError={(e) => (e.currentTarget.style.display = "none")}
-            />
-          ) : (
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: "50%",
-                background: C.c3,
-                border: `1px solid ${C.border2}`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 8,
-                fontWeight: 700,
-                color: C.iceDim,
-                flexShrink: 0,
-                fontFamily: "'JetBrains Mono',monospace",
-              }}
-            >
-              {match.awayAbbr}
-            </div>
-          )}
+          <TeamBadge
+            src={match.awayFlag || match.awayLogo}
+            abbr={match.awayAbbr}
+            international={match.isInternational}
+          />
           <span
             style={{
               fontSize: 13,
@@ -1817,7 +1762,7 @@ function MatchCard({ match }: { match: any }) {
       </div>
 
       {/* Goal events strip below score (for live/final) */}
-      {match.timeline && match.timeline.length > 0 && (
+      {matchEvents(match).length > 0 && (
         <div
           style={{
             padding: "4px 12px 6px",
@@ -1827,40 +1772,37 @@ function MatchCard({ match }: { match: any }) {
             borderTop: `1px solid ${C.border}`,
           }}
         >
-          {match.timeline
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((e: any, i: number) => {
-              const icon =
-                e.type === "goal" || e.type === "penalty" || e.type === "og"
-                  ? "⚽"
-                  : e.type === "yellow"
-                  ? "🟨"
-                  : e.type === "red"
-                  ? "🟥"
-                  : e.type === "subst"
-                  ? "↔"
-                  : "•";
-              const label =
-                e.text ||
-                (e.type === "subst"
-                  ? e.playerName
-                  : `${e.playerName || "Event"}${e.min ? ` ${e.min}'` : ""}`);
-              return (
-                <span
-                  key={i}
-                  style={{
-                    fontSize: 10,
-                    color: e.team === "home" ? C.cyan : C.blue,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 3,
-                  }}
-                >
-                  {icon}{" "}
-                  <span style={{ color: C.iceDim }}>{label}</span>
-                </span>
-              );
-            })}
+          {matchEvents(match).map((e, i) => {
+            const icon =
+              e.type === "goal"
+                ? "⚽"
+                : e.type === "card"
+                ? "🟨"
+                : e.type === "sub"
+                ? "↔"
+                : "•";
+            const label =
+              e.label ||
+              e.text ||
+              (e.type === "sub"
+                ? e.playerName
+                : `${e.playerName || "Event"}${e.min ? ` ${e.min}'` : ""}`);
+            return (
+              <span
+                key={i}
+                style={{
+                  fontSize: 10,
+                  color: e.team === "home" ? C.cyan : C.blue,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                }}
+              >
+                {icon}{" "}
+                <span style={{ color: C.iceDim }}>{label}</span>
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -1904,7 +1846,9 @@ function ScoresPanel() {
     async function load(initial: boolean) {
       if (initial) setLoading(true);
       try {
-        const res = await fetch(`/api/matches?date=${selectedDate}`);
+        const res = await fetch(`/api/matches?date=${selectedDate}`, {
+          cache: "no-store",
+        });
         const payload = await res.json();
         if (active && payload.matches) {
           const sorted = payload.matches.sort(
@@ -1934,7 +1878,7 @@ function ScoresPanel() {
       if (initial) setLoading(false);
     }
     load(true);
-    const interval = setInterval(() => load(false), 30000);
+    const interval = setInterval(() => load(false), 10000);
     return () => {
       active = false;
       clearInterval(interval);
@@ -2020,7 +1964,7 @@ function ScoresPanel() {
             style={{ fontSize: 12, color: C.red, fontWeight: 600 }}
           >
             {liveCount} match{liveCount > 1 ? "es" : ""} live now —
-            auto-refreshing every 30s
+            refreshing every 10s
           </span>
         </div>
       )}
@@ -2311,19 +2255,24 @@ function ScoutPanel() {
     setError("");
     setInput(name);
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
       const res = await fetch("/api/scout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
+        signal: controller.signal,
+        cache: "no-store",
       });
+      clearTimeout(timer);
       const payload = await res.json();
       if (payload.report) {
         setReport(payload.report);
       } else {
-        setError("Could not generate scouting report. Try again.");
+        setError(payload.error || "Could not generate scouting report. Try again.");
       }
     } catch {
-      setError("Scout engine error. Please try again.");
+      setError("Scout engine timed out or failed. Please try again.");
     }
     setLoading(false);
   };
@@ -2560,7 +2509,7 @@ function ScoutPanel() {
         >
           <Dots />
           <span style={{ marginLeft: 8 }}>
-            Pulling data from TheSportsDB + YouTube…
+            Fetching player profile and AI analysis…
           </span>
         </div>
       )}
@@ -2652,9 +2601,16 @@ function ScoutPanel() {
                 {report.name}
               </div>
               <div style={{ fontSize: 11, color: C.iceDim }}>
-                {report.position} · {report.club} · {report.league} ·{" "}
-                {report.nationality} · Age {report.age}
+                {report.position} · {report.club} · {report.nationality}
+                {report.age ? ` · Age ${report.age}` : ""}
               </div>
+              {(report.height || report.weight || report.preferredFoot) && (
+                <div style={{ fontSize: 10, color: C.iceDim, marginTop: 2 }}>
+                  {[report.height, report.weight, report.preferredFoot !== "—" ? `${report.preferredFoot} foot` : ""]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </div>
+              )}
               {Boolean(report.hidden_gem) && (
                 <span
                   style={{
@@ -2956,10 +2912,10 @@ function ScoutPanel() {
               <div
                 style={{
                   padding: "10px 14px",
-                  background: C.c3,
-                  border: `1px solid ${C.border}`,
+                  background: "rgba(239,68,68,0.06)",
+                  border: "1px solid rgba(239,68,68,0.2)",
                   borderRadius: 8,
-                  color: C.iceDim,
+                  color: C.red,
                   fontSize: 12,
                 }}
               >

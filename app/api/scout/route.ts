@@ -1,11 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import { CLAUDE_MODEL, fetchJsonSafe, tsdbBase } from "@/lib/tsdb";
 
 const client = new Anthropic();
 
 interface TSDBPlayer {
   idPlayer: string;
   strPlayer: string;
+  strSport?: string;
   strTeam?: string;
   strTeam2?: string;
   strPosition?: string;
@@ -20,14 +22,39 @@ interface TSDBPlayer {
   strBirthLocation?: string;
   strSigning?: string;
   strNumber?: string;
+  strFoot?: string;
 }
 
 interface YouTubeSearchItem {
   id: { videoId: string };
   snippet: {
     title: string;
-    channelTitle: string;
     thumbnails: { default: { url: string } };
+  };
+}
+
+function calcAge(dateBorn: string | undefined): number | null {
+  if (!dateBorn) return null;
+  const birth = new Date(dateBorn);
+  if (isNaN(birth.getTime())) return null;
+  return new Date().getFullYear() - birth.getFullYear();
+}
+
+function buildPlayerProfile(player: TSDBPlayer | null, query: string) {
+  return {
+    name: player?.strPlayer || query,
+    club: player?.strTeam || "—",
+    league: "",
+    nationality: player?.strNationality || "—",
+    position: player?.strPosition || "—",
+    age: calcAge(player?.dateBorn),
+    height: player?.strHeight || "—",
+    weight: player?.strWeight || "—",
+    preferredFoot: player?.strFoot || "—",
+    number: player?.strNumber || "—",
+    birthLocation: player?.strBirthLocation || "—",
+    playerThumb: player?.strThumb || "",
+    playerCutout: player?.strCutout || "",
   };
 }
 
@@ -38,21 +65,21 @@ async function fetchYouTubeHighlight(
   if (!ytKey) return { url: null, title: null, thumb: null };
 
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
     const q = encodeURIComponent(`${playerName} football highlights`);
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&q=${q}&type=video&key=${ytKey}&videoEmbeddable=true&relevanceLanguage=en`,
-      { next: { revalidate: 3600 } }
+      { signal: controller.signal, cache: "no-store" }
     );
+    clearTimeout(timer);
     if (!res.ok) return { url: null, title: null, thumb: null };
 
     const data = await res.json();
     const items: YouTubeSearchItem[] = data.items || [];
     const best =
-      items.find(
-        (it) =>
-          it.snippet.title.toLowerCase().includes("highlight") ||
-          it.snippet.title.toLowerCase().includes("skill") ||
-          it.snippet.title.toLowerCase().includes("goals")
+      items.find((it) =>
+        /highlight|skill|goal/i.test(it.snippet.title)
       ) || items[0];
 
     if (!best?.id?.videoId) return { url: null, title: null, thumb: null };
@@ -67,19 +94,42 @@ async function fetchYouTubeHighlight(
   }
 }
 
-async function askHaikuJSON(prompt: string): Promise<Record<string, unknown>> {
-  const msg = await client.messages.create({
-    model: "claude-3-haiku-20240307",
-    max_tokens: 900,
-    messages: [{ role: "user", content: prompt }],
-  });
-  const rawText = msg.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; text: string }).text)
-    .join("");
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON in AI response");
-  return JSON.parse(jsonMatch[0]);
+async function askHaikuAnalysis(
+  playerLabel: string,
+  profile: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+
+    const msg = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 800,
+      messages: [
+        {
+          role: "user",
+          content: `You are an elite football scout analyzing ${playerLabel}.
+Use ONLY this verified profile for factual fields — do not contradict it:
+${JSON.stringify(profile)}
+
+Return ONLY subjective scouting analysis as raw JSON. No markdown. No backticks.
+{"overall":number,"hidden_gem":boolean,"ratings":{"pace":number,"technical":number,"physical":number,"mental":number,"defending":number,"shooting":number},"seasonStats":{"goals":number,"assists":number,"apps":number,"avgRating":number},"pastSeasonStats":[{"year":"2024/25","club":"string","goals":number,"assists":number,"apps":number},{"year":"2023/24","club":"string","goals":number,"assists":number,"apps":number}],"strengths":["string","string","string"],"weaknesses":["string","string"],"style":"2 sentences","verdict":"2 sentences"}`,
+        },
+      ],
+    });
+    clearTimeout(timer);
+
+    const rawText = msg.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
+    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return {};
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.error("Scout AI overlay error:", err);
+    return {};
+  }
 }
 
 export async function POST(request: Request) {
@@ -89,86 +139,47 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Name required" }, { status: 400 });
     }
 
-    const apiKey = process.env.THESPORTSDB_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: "Data service unavailable" }, { status: 503 });
-    }
-
-    const dbRes = await fetch(
-      `https://www.thesportsdb.com/api/v1/json/${apiKey}/searchplayers.php?p=${encodeURIComponent(name)}`,
-      { next: { revalidate: 300 } }
+    const query = name.trim();
+    const data = await fetchJsonSafe(
+      `${tsdbBase()}/searchplayers.php?p=${encodeURIComponent(query)}`
     );
-    if (!dbRes.ok) {
-      return NextResponse.json({ error: "Player lookup failed" }, { status: 502 });
-    }
+    const players = (data.player as TSDBPlayer[]) || [];
+    const realPlayer = players.find((p) =>
+      /soccer|football/i.test(String(p.strSport || "soccer"))
+    ) || players[0] || null;
 
-    const dbData = await dbRes.json();
-    const realPlayer: TSDBPlayer | null = dbData.player?.[0] ?? null;
-    const playerLabel = realPlayer?.strPlayer || name.trim();
+    const profile = buildPlayerProfile(realPlayer, query);
 
     let ytLink: string | null = null;
     let ytTitle: string | null = null;
     let ytThumb: string | null = null;
 
     try {
-      const ytResult = await fetchYouTubeHighlight(playerLabel);
-      ytLink = ytResult.url;
-      ytTitle = ytResult.title;
-      ytThumb = ytResult.thumb;
+      const yt = await fetchYouTubeHighlight(profile.name);
+      ytLink = yt.url;
+      ytTitle = yt.title;
+      ytThumb = yt.thumb;
     } catch {
       ytLink = null;
       ytTitle = null;
       ytThumb = null;
     }
 
-    const report = await askHaikuJSON(`You are an elite global football scout. You must scout: ${name}.
+    const aiOverlay = await askHaikuAnalysis(profile.name, profile);
 
-Here is their verified database profile (use this for current club, position, nationality — do not contradict it):
-${JSON.stringify(realPlayer || {})}
-
-Based on this real profile plus your deep football knowledge, produce a scouting report.
-Respond ONLY with a raw valid JSON object. No markdown. No backticks. No explanation outside the JSON.
-Schema:
-{
-  "name": "string — exact name from DB profile",
-  "club": "string — current club from DB or best known",
-  "league": "string",
-  "nationality": "string — from DB",
-  "position": "string — from DB",
-  "age": number,
-  "overall": number between 60-99,
-  "hidden_gem": boolean,
-  "ratings": {
-    "pace": number,
-    "technical": number,
-    "physical": number,
-    "mental": number,
-    "defending": number,
-    "shooting": number
-  },
-  "seasonStats": {
-    "goals": number,
-    "assists": number,
-    "apps": number,
-    "avgRating": number
-  },
-  "pastSeasonStats": [
-    {"year": "2024/25", "club": "string", "goals": number, "assists": number, "apps": number},
-    {"year": "2023/24", "club": "string", "goals": number, "assists": number, "apps": number}
-  ],
-  "strengths": ["string", "string", "string"],
-  "weaknesses": ["string", "string"],
-  "style": "2-sentence description of playing style",
-  "verdict": "2-sentence scout verdict on potential and market value"
-}`);
-
-    report.ytLink = ytLink;
-    report.ytTitle = ytTitle;
-    report.ytThumb = ytThumb;
-    report.hasHighlight = !!ytLink;
-
-    if (realPlayer?.strThumb) report.playerThumb = realPlayer.strThumb;
-    if (realPlayer?.strCutout) report.playerCutout = realPlayer.strCutout;
+    const report = {
+      ...profile,
+      ...aiOverlay,
+      name: profile.name,
+      club: aiOverlay.club || profile.club,
+      nationality: profile.nationality,
+      position: profile.position,
+      age: aiOverlay.age ?? profile.age,
+      ytLink,
+      ytTitle,
+      ytThumb,
+      hasHighlight: !!ytLink,
+    };
 
     return NextResponse.json({ report });
   } catch (err) {
