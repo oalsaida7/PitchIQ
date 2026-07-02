@@ -3,7 +3,7 @@ import {
   MatchEvent,
   estDateKey,
   fetchEventsForDate,
-  fetchLiveEventIds,
+  fetchLiveEvents,
   formatKickoffEst,
   isInternationalLeague,
   normalizeEventType,
@@ -148,26 +148,50 @@ export async function GET(request: Request) {
   const dateStr = searchParams.get("date") || estDateKey();
 
   try {
-    const [rawEvents, liveIds] = await Promise.all([
+    const [rawEvents, liveEvents] = await Promise.all([
       fetchEventsForDate(dateStr),
-      fetchLiveEventIds(),
+      fetchLiveEvents(),
     ]);
 
-    const cleanMatches = rawEvents.map((f) => {
-      const strStatus = String(f.strStatus || "");
+    // The livescore feed carries the freshest strStatus / strProgress / scores,
+    // so overlay it onto the (often stale) eventsday.php rows.
+    const liveById = new Map<string, Record<string, unknown>>();
+    for (const le of liveEvents) {
+      const id = String(le.idEvent || le.id || "");
+      if (id) liveById.set(id, le);
+    }
+    const liveIds = new Set(liveById.keys());
+
+    const mergedEvents = rawEvents.map((f) => {
+      const live = liveById.get(String(f.idEvent || f.id || ""));
+      if (!live) return f;
+      return {
+        ...f,
+        strStatus: live.strStatus ?? f.strStatus,
+        strProgress: live.strProgress ?? f.strProgress,
+        intHomeScore: live.intHomeScore ?? f.intHomeScore,
+        intAwayScore: live.intAwayScore ?? f.intAwayScore,
+      };
+    });
+
+    const cleanMatches = mergedEvents.map((f) => {
       const leagueName = String(f.strLeague || "");
       const status = resolveMatchStatus(f, liveIds);
 
       const homeScore =
-        f.intHomeScore !== null && f.intHomeScore !== ""
+        f.intHomeScore !== null &&
+        f.intHomeScore !== undefined &&
+        f.intHomeScore !== ""
           ? Number(f.intHomeScore)
           : null;
       const awayScore =
-        f.intAwayScore !== null && f.intAwayScore !== ""
+        f.intAwayScore !== null &&
+        f.intAwayScore !== undefined &&
+        f.intAwayScore !== ""
           ? Number(f.intAwayScore)
           : null;
 
-      let events = parseEventFields(f as Record<string, string | null | undefined>);
+      const events = parseEventFields(f as Record<string, string | null | undefined>);
 
       return {
         id: f.idEvent || f.id,

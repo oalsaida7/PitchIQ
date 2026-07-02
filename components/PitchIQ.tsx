@@ -1322,7 +1322,7 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "24px 1fr 28px 28px 28px 28px 36px",
+            gridTemplateColumns: "24px 1fr 26px 26px 26px 26px 32px 34px",
             gap: 3,
             padding: "4px 0 8px",
             borderBottom: `1px solid ${C.border2}`,
@@ -1339,12 +1339,14 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
           <span style={{ textAlign: "center" }}>W</span>
           <span style={{ textAlign: "center" }}>D</span>
           <span style={{ textAlign: "center" }}>L</span>
+          <span style={{ textAlign: "center" }}>GD</span>
           <span style={{ textAlign: "center" }}>Pts</span>
         </div>
         {teams.map(
           (t: {
             pos: number;
             name: string;
+            badge?: string;
             played: number;
             won: number;
             drawn: number;
@@ -1356,10 +1358,10 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
               t.name === match.home || t.name === match.away;
             return (
               <div
-                key={t.pos}
+                key={`${t.pos}-${t.name}`}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "24px 1fr 28px 28px 28px 28px 36px",
+                  gridTemplateColumns: "24px 1fr 26px 26px 26px 26px 32px 34px",
                   gap: 3,
                   padding: "6px 0",
                   borderBottom: `1px solid ${C.border}`,
@@ -1383,10 +1385,24 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
                 </span>
                 <span
                   style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
                     color: hl ? C.cyan : C.ice,
                     fontWeight: hl ? 600 : 400,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
+                  {t.badge && (
+                    <img
+                      src={t.badge}
+                      alt=""
+                      style={{ width: 15, height: 15, objectFit: "contain", flexShrink: 0 }}
+                      onError={(e) => (e.currentTarget.style.display = "none")}
+                    />
+                  )}
                   {t.name}
                 </span>
                 <span
@@ -1424,6 +1440,20 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
                   }}
                 >
                   {t.lost}
+                </span>
+                <span
+                  style={{
+                    textAlign: "center",
+                    color: String(t.gd || "").startsWith("+")
+                      ? C.green
+                      : String(t.gd || "").startsWith("-")
+                      ? C.red
+                      : C.iceDim,
+                    fontFamily: "'JetBrains Mono',monospace",
+                    fontSize: 11,
+                  }}
+                >
+                  {t.gd || "0"}
                 </span>
                 <span
                   style={{
@@ -1567,9 +1597,9 @@ function MatchExpanded({
   );
 }
 
-// ─── Match card ────────────────────────────────────────────────────────────────
+// ─── Match card (FotMob-style: status rail + stacked teams) ────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function MatchCard({ match }: { match: any }) {
+function MatchCard({ match, isLast }: { match: any; isLast?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const [tabCache, setTabCache] = useState<Record<string, unknown>>({});
 
@@ -1604,197 +1634,198 @@ function MatchCard({ match }: { match: any }) {
     isFinal && match.hasScore && match.score.home > match.score.away;
   const winA =
     isFinal && match.hasScore && match.score.away > match.score.home;
-
-  // For live games that have a real score but haven't been marked final yet
   const showScore = (isFinal || isLive) && match.hasScore;
+
+  const goals = matchEvents(match).filter((e) => e.type === "goal");
+
+  const teamRow = (side: "home" | "away") => {
+    const isHome = side === "home";
+    const name = isHome ? match.home : match.away;
+    const won = isHome ? winH : winA;
+    const lost = isHome ? winA : winH;
+    const score = isHome ? match.score.home : match.score.away;
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          minHeight: 22,
+        }}
+      >
+        <TeamBadge
+          src={isHome ? match.homeFlag || match.homeLogo : match.awayFlag || match.awayLogo}
+          abbr={isHome ? match.homeAbbr : match.awayAbbr}
+          international={match.isInternational}
+        />
+        <span
+          style={{
+            flex: 1,
+            fontSize: 13,
+            fontWeight: won ? 700 : 500,
+            color: lost ? C.iceDim : C.ice,
+            lineHeight: 1.25,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {name}
+        </span>
+        {showScore && (
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: won ? 800 : 600,
+              color: isLive ? C.cyan : lost ? C.iceDim : C.ice,
+              fontFamily: "'JetBrains Mono',monospace",
+              flexShrink: 0,
+            }}
+          >
+            {score}
+          </span>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div
       style={{
-        background: C.charcoal,
-        borderRadius: 10,
-        border: `1px solid ${
-          expanded
-            ? C.cyanBorder
-            : isLive
-            ? "rgba(239,68,68,0.35)"
-            : C.border
-        }`,
-        overflow: "hidden",
-        marginBottom: 3,
-        transition: "border-color .15s",
+        borderBottom: isLast && !expanded ? "none" : `1px solid ${C.border}`,
+        background: expanded ? C.c2 : "transparent",
+        transition: "background .15s",
         cursor: "pointer",
       }}
       onClick={() => setExpanded((e) => !e)}
     >
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 72px 1fr",
-          alignItems: "center",
-          gap: 6,
-          padding: "11px 12px",
+          display: "flex",
+          alignItems: "stretch",
+          gap: 10,
+          padding: "9px 12px",
         }}
       >
-        {/* Home */}
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <TeamBadge
-            src={match.homeFlag || match.homeLogo}
-            abbr={match.homeAbbr}
-            international={match.isInternational}
-          />
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: winA ? C.iceDim : C.ice,
-              lineHeight: 1.2,
-            }}
-          >
-            {match.home}
-          </span>
-        </div>
-
-        {/* Middle: score / live min / kick-off */}
-        <div style={{ textAlign: "center" }}>
+        {/* Status rail: kickoff / live minute / FT */}
+        <div
+          style={{
+            width: 46,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 3,
+            borderRight: `1px solid ${C.border}`,
+            paddingRight: 8,
+          }}
+        >
           {isLive ? (
-            <div>
-              {showScore && (
-                <div
-                  style={{
-                    fontSize: 18,
-                    fontWeight: 700,
-                    color: C.ice,
-                    letterSpacing: 2,
-                    fontFamily: "'JetBrains Mono',monospace",
-                    lineHeight: 1,
-                    marginBottom: 3,
-                  }}
-                >
-                  {match.score.home}–{match.score.away}
-                </div>
-              )}
-              <div
+            <>
+              <span
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 4,
+                  display: "inline-block",
+                  width: 6,
+                  height: 6,
+                  background: C.red,
+                  borderRadius: "50%",
+                  animation: "live-pulse 1.5s infinite",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: C.red,
+                  fontFamily: "'JetBrains Mono',monospace",
+                  textAlign: "center",
                 }}
               >
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 7,
-                    height: 7,
-                    background: C.red,
-                    borderRadius: "50%",
-                    animation: "live-pulse 1.5s infinite",
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: C.red,
-                    fontFamily: "'JetBrains Mono',monospace",
-                  }}
-                >
-                  {match.liveMin || "LIVE"}
-                </span>
-              </div>
-            </div>
+                {match.liveMin || "LIVE"}
+              </span>
+            </>
           ) : isFinal ? (
-            <div
+            <span
               style={{
-                fontSize: 19,
+                fontSize: 11,
                 fontWeight: 700,
-                color: C.ice,
-                letterSpacing: 2,
+                color: C.iceDim,
                 fontFamily: "'JetBrains Mono',monospace",
               }}
             >
-              {match.hasScore
-                ? `${match.score.home}–${match.score.away}`
-                : "FT"}
-            </div>
+              FT
+            </span>
           ) : (
-            <div style={{ fontSize: 12, color: C.iceDim }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: C.iceDim,
+                textAlign: "center",
+                lineHeight: 1.3,
+              }}
+            >
               {match.kick || "TBD"}
-            </div>
+            </span>
           )}
         </div>
 
-        {/* Away */}
+        {/* Stacked teams with per-team scores */}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            gap: 5,
+            minWidth: 0,
+          }}
+        >
+          {teamRow("home")}
+          {teamRow("away")}
+        </div>
+
+        {/* Expand chevron */}
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 7,
-            flexDirection: "row-reverse",
+            color: C.iceDim,
+            fontSize: 10,
+            flexShrink: 0,
           }}
         >
-          <TeamBadge
-            src={match.awayFlag || match.awayLogo}
-            abbr={match.awayAbbr}
-            international={match.isInternational}
-          />
-          <span
-            style={{
-              fontSize: 13,
-              fontWeight: 500,
-              color: winH ? C.iceDim : C.ice,
-              textAlign: "right",
-              lineHeight: 1.2,
-            }}
-          >
-            {match.away}
-          </span>
+          {expanded ? "▲" : "▼"}
         </div>
       </div>
 
-      {/* Goal events strip below score (for live/final) */}
-      {matchEvents(match).length > 0 && (
+      {/* Goal scorers strip (live/final only) */}
+      {goals.length > 0 && (
         <div
           style={{
-            padding: "4px 12px 6px",
+            padding: "0 12px 8px 68px",
             display: "flex",
-            gap: 8,
+            gap: 10,
             flexWrap: "wrap",
-            borderTop: `1px solid ${C.border}`,
           }}
         >
-          {matchEvents(match).map((e, i) => {
-            const icon =
-              e.type === "goal"
-                ? "⚽"
-                : e.type === "card"
-                ? "🟨"
-                : e.type === "sub"
-                ? "↔"
-                : "•";
-            const label =
-              e.label ||
-              e.text ||
-              (e.type === "sub"
-                ? e.playerName
-                : `${e.playerName || "Event"}${e.min ? ` ${e.min}'` : ""}`);
-            return (
-              <span
-                key={i}
-                style={{
-                  fontSize: 10,
-                  color: e.team === "home" ? C.cyan : C.blue,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 3,
-                }}
-              >
-                {icon}{" "}
-                <span style={{ color: C.iceDim }}>{label}</span>
-              </span>
-            );
-          })}
+          {goals.map((e, i) => (
+            <span
+              key={i}
+              style={{
+                fontSize: 10,
+                color: C.iceDim,
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
+              }}
+            >
+              <span style={{ color: e.team === "home" ? C.cyan : C.blue }}>⚽</span>
+              {e.playerName || e.label || "Goal"}
+              {e.min ? ` ${e.min}'` : ""}
+            </span>
+          ))}
         </div>
       )}
 
@@ -1817,6 +1848,7 @@ function ScoresPanel() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [matches, setMatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<"all" | "live" | "final">("all");
 
   const PRIORITY = [
     "world cup",
@@ -1876,15 +1908,27 @@ function ScoresPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate]);
 
+  const liveCount = matches.filter((m) => m.status === "live").length;
+  const finalCount = matches.filter((m) => m.status === "final").length;
+
+  const visibleMatches =
+    statusFilter === "all"
+      ? matches
+      : matches.filter((m) => m.status === statusFilter);
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const byLeague: Record<string, any[]> = {};
-  matches.forEach((m) => {
+  visibleMatches.forEach((m) => {
     const key = m.leagueName || m.league || "Other";
     if (!byLeague[key]) byLeague[key] = [];
     byLeague[key].push(m);
   });
 
-  const liveCount = matches.filter((m) => m.status === "live").length;
+  const filterChips: Array<{ id: "all" | "live" | "final"; label: string; count?: number }> = [
+    { id: "all", label: "All" },
+    { id: "live", label: "Live", count: liveCount },
+    { id: "final", label: "Finished", count: finalCount },
+  ];
 
   return (
     <div>
@@ -1928,38 +1972,90 @@ function ScoresPanel() {
         ))}
       </div>
 
-      {/* Live indicator */}
-      {liveCount > 0 && (
-        <div
-          style={{
-            background: "rgba(239,68,68,0.07)",
-            borderBottom: `1px solid rgba(239,68,68,0.18)`,
-            padding: "6px 14px",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
+      {/* Status filter chips */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "8px 12px 0",
+        }}
+      >
+        {filterChips.map((f) => {
+          const isActive = statusFilter === f.id;
+          const isLiveChip = f.id === "live";
+          return (
+            <button
+              key={f.id}
+              onClick={() => setStatusFilter(f.id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "4px 11px",
+                borderRadius: 14,
+                fontSize: 11,
+                fontWeight: isActive ? 700 : 500,
+                fontFamily: "'Space Grotesk',sans-serif",
+                color: isActive
+                  ? isLiveChip
+                    ? "#fff"
+                    : "#0B0C10"
+                  : C.iceDim,
+                background: isActive
+                  ? isLiveChip
+                    ? C.red
+                    : C.cyan
+                  : C.c3,
+                border: `1px solid ${
+                  isActive ? (isLiveChip ? C.red : C.cyan) : C.border2
+                }`,
+                cursor: "pointer",
+                transition: "all .12s",
+              }}
+            >
+              {isLiveChip && liveCount > 0 && (
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 5,
+                    height: 5,
+                    background: isActive ? "#fff" : C.red,
+                    borderRadius: "50%",
+                    animation: "live-pulse 1.5s infinite",
+                  }}
+                />
+              )}
+              {f.label}
+              {f.count !== undefined && (
+                <span
+                  style={{
+                    fontSize: 9,
+                    fontFamily: "'JetBrains Mono',monospace",
+                    opacity: 0.8,
+                  }}
+                >
+                  {f.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {liveCount > 0 && (
           <span
             style={{
-              display: "inline-block",
-              width: 6,
-              height: 6,
-              background: C.red,
-              borderRadius: "50%",
-              animation: "live-pulse 1.5s infinite",
+              marginLeft: "auto",
+              fontSize: 10,
+              color: C.iceDim,
+              whiteSpace: "nowrap",
             }}
-          />
-          <span
-            style={{ fontSize: 12, color: C.red, fontWeight: 600 }}
           >
-            {liveCount} match{liveCount > 1 ? "es" : ""} live now —
-            refreshing every 10s
+            auto-refresh 10s
           </span>
-        </div>
-      )}
+        )}
+      </div>
 
-      <div style={{ padding: "6px 12px 24px" }}>
+      <div style={{ padding: "10px 12px 24px" }}>
         {loading ? (
           <div
             style={{
@@ -1971,7 +2067,7 @@ function ScoresPanel() {
           >
             <Dots /> Loading matches…
           </div>
-        ) : !matches.length ? (
+        ) : !visibleMatches.length ? (
           <div
             style={{
               textAlign: "center",
@@ -1980,17 +2076,31 @@ function ScoresPanel() {
               fontSize: 13,
             }}
           >
-            No matches found for this date.
+            {matches.length
+              ? "No matches match this filter."
+              : "No matches found for this date."}
           </div>
         ) : (
           Object.entries(byLeague).map(([lg, ms]) => (
-            <div key={lg} style={{ marginBottom: 16 }}>
+            <div
+              key={lg}
+              style={{
+                background: C.charcoal,
+                borderRadius: 12,
+                border: `1px solid ${C.border}`,
+                overflow: "hidden",
+                marginBottom: 10,
+              }}
+            >
+              {/* League header */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: "8px 0 6px",
+                  padding: "9px 12px",
+                  background: C.c2,
+                  borderBottom: `1px solid ${C.border}`,
                 }}
               >
                 {ms[0].leagueLogo ? (
@@ -2023,24 +2133,30 @@ function ScoresPanel() {
                 <span
                   style={{
                     fontSize: 12,
-                    fontWeight: 600,
-                    color: C.iceDim,
+                    fontWeight: 700,
+                    color: C.ice,
+                    letterSpacing: ".2px",
                   }}
                 >
                   {lg}
                 </span>
                 <span
                   style={{
-                    fontSize: 11,
+                    fontSize: 10,
                     color: C.iceDim,
                     marginLeft: "auto",
+                    fontFamily: "'JetBrains Mono',monospace",
                   }}
                 >
-                  {ms.length} game{ms.length > 1 ? "s" : ""}
+                  {ms.length}
                 </span>
               </div>
-              {ms.map((m) => (
-                <MatchCard key={m.id} match={m} />
+              {ms.map((m, idx) => (
+                <MatchCard
+                  key={m.id}
+                  match={m}
+                  isLast={idx === ms.length - 1}
+                />
               ))}
             </div>
           ))
@@ -2060,17 +2176,33 @@ function NewsPanel() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [loading, setLoading] = useState(true);
 
+  // Fetch the full feed once; category switching filters locally in state.
   useEffect(() => {
+    let active = true;
     setLoading(true);
-    fetch(`/api/news?category=${activeCategory}`, { cache: "no-store" })
+    fetch(`/api/news?category=all`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
+        if (!active) return;
         if (d.news) setNews(d.news);
-        if (d.categories) setCategories(d.categories);
+        if (d.categories?.length) setCategories(d.categories);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [activeCategory]);
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const filteredNews =
+    activeCategory === "all"
+      ? news
+      : news.filter((n) => n.category === activeCategory);
+
+  const countFor = (id: string) =>
+    id === "all" ? news.length : news.filter((n) => n.category === id).length;
 
   return (
     <div>
@@ -2084,25 +2216,50 @@ function NewsPanel() {
           scrollbarWidth: "none",
         }}
       >
-        {categories.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setActiveCategory(c.id)}
-            style={{
-              flexShrink: 0,
-              padding: "5px 12px",
-              borderRadius: 16,
-              fontSize: 11,
-              fontWeight: activeCategory === c.id ? 600 : 400,
-              color: activeCategory === c.id ? "#0B0C10" : C.iceDim,
-              background: activeCategory === c.id ? C.cyan : C.c3,
-              border: `1px solid ${activeCategory === c.id ? C.cyan : C.border2}`,
-              cursor: "pointer",
-            }}
-          >
-            {c.label}
-          </button>
-        ))}
+        {categories.map((c) => {
+          const isActive = activeCategory === c.id;
+          const count = countFor(c.id);
+          return (
+            <button
+              key={c.id}
+              onClick={() => setActiveCategory(c.id)}
+              style={{
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "5px 12px",
+                borderRadius: 16,
+                fontSize: 11,
+                fontWeight: isActive ? 600 : 400,
+                color: isActive ? "#0B0C10" : C.iceDim,
+                background: isActive ? C.cyan : C.c3,
+                border: `1px solid ${isActive ? C.cyan : C.border2}`,
+                cursor: "pointer",
+                fontFamily: "'Space Grotesk',sans-serif",
+              }}
+            >
+              {c.label}
+              {!loading && (
+                <span
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "1px 5px",
+                    borderRadius: 8,
+                    background: isActive
+                      ? "rgba(11,12,16,0.18)"
+                      : "rgba(255,255,255,0.06)",
+                    color: isActive ? "#0B0C10" : C.iceDim,
+                    fontFamily: "'JetBrains Mono',monospace",
+                  }}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {loading && (
@@ -2116,7 +2273,7 @@ function NewsPanel() {
           <Dots /> Fetching news…
         </div>
       )}
-      {!loading && !news.length && (
+      {!loading && !filteredNews.length && (
         <div
           style={{
             textAlign: "center",
@@ -2125,12 +2282,12 @@ function NewsPanel() {
             fontSize: 13,
           }}
         >
-          No news available right now.
+          No news in this category right now.
         </div>
       )}
-      {news.map((n, i) => (
+      {filteredNews.map((n, i) => (
         <div
-          key={i}
+          key={n.id || i}
           style={{
             padding: "12px 14px",
             borderBottom: `1px solid ${C.border}`,

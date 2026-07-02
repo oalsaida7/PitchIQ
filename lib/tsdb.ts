@@ -10,39 +10,81 @@ export interface MatchEvent {
 }
 
 const FINISHED_STATUSES = new Set([
-  "Match Finished",
-  "FT",
-  "AET",
-  "PEN",
-  "Finished",
-  "After Penalties",
-  "After Extra Time",
+  "ft",
+  "aet",
+  "pen",
+  "ap",
+  "match finished",
+  "finished",
+  "full time",
+  "full-time",
+  "after penalties",
+  "after extra time",
+  "ended",
+  "final",
 ]);
 
 const SCHEDULED_STATUSES = new Set([
-  "NS",
-  "Not Started",
-  "TBD",
-  "Scheduled",
-  "Postponed",
-  "Cancelled",
-  "Abandoned",
-  "Delayed",
+  "ns",
+  "not started",
+  "tbd",
+  "scheduled",
+  "postponed",
+  "cancelled",
+  "canceled",
+  "abandoned",
+  "delayed",
+  "susp",
+  "suspended",
   "",
 ]);
 
 const LIVE_STATUSES = new Set([
-  "In Progress",
-  "HT",
-  "1H",
-  "2H",
-  "ET",
-  "BT",
-  "P",
-  "LIVE",
-  "Half Time",
-  "Extra Time",
+  "in progress",
+  "1h",
+  "2h",
+  "ht",
+  "half time",
+  "halftime",
+  "half-time",
+  "et",
+  "extra time",
+  "bt",
+  "break time",
+  "p",
+  "penalty shootout",
+  "live",
+  "playing",
+  "var",
+  "kick off",
 ]);
+
+export function isFinishedStatus(strStatus: string): boolean {
+  const s = strStatus.trim().toLowerCase();
+  if (!s) return false;
+  return FINISHED_STATUSES.has(s) || s.includes("finished");
+}
+
+export function isScheduledStatus(strStatus: string): boolean {
+  return SCHEDULED_STATUSES.has(strStatus.trim().toLowerCase());
+}
+
+export function isLiveStatus(strStatus: string): boolean {
+  const s = strStatus.trim().toLowerCase();
+  if (!s) return false;
+  return LIVE_STATUSES.has(s) || s.includes("progress") || s.includes("var");
+}
+
+/** Matches "67", "45+2", "90+4'" — a real in-play minute from strProgress. */
+export function parseProgressMinute(raw: unknown): string | null {
+  const s = String(raw ?? "").trim().replace(/['′]/g, "");
+  if (!s || s === "0" || s === "-") return null;
+  const m = s.match(/^(\d{1,3})(\+\d{1,2})?$/);
+  if (!m) return null;
+  const base = Number(m[1]);
+  if (base < 1 || base > 130) return null;
+  return `${m[1]}${m[2] || ""}`;
+}
 
 const COUNTRY_ISO: Record<string, string> = {
   Morocco: "ma",
@@ -136,7 +178,8 @@ export function tsdbV2Url(path: string): string {
 
 export function tsdbV1Url(path: string): string {
   const clean = path.replace(/^\//, "");
-  return `https://www.thesportsdb.com/api/v1/json/${clean}`;
+  // v1 authenticates via the key embedded in the URL path, not the X-API-KEY header
+  return `https://www.thesportsdb.com/api/v1/json/${getApiKey()}/${clean}`;
 }
 
 /** @deprecated use tsdbV2Url / tsdbFetchV2 */
@@ -348,6 +391,7 @@ export function resolveMatchStatus(
 ): "scheduled" | "live" | "final" {
   const id = String(event.idEvent || event.id || "");
   const strStatus = String(event.strStatus || "").trim();
+  const progressMinute = parseProgressMinute(event.strProgress);
   const homeScore = event.intHomeScore;
   const awayScore = event.intAwayScore;
   const hasScore =
@@ -358,32 +402,31 @@ export function resolveMatchStatus(
     awayScore !== undefined &&
     awayScore !== "";
 
-  if (FINISHED_STATUSES.has(strStatus)) return "final";
-  if (SCHEDULED_STATUSES.has(strStatus)) return "scheduled";
+  // Explicit terminal statuses win over everything (FT, AET, PEN, Match Finished…)
+  if (isFinishedStatus(strStatus)) return "final";
 
+  // Currently reported by the live feed
+  if (liveIds.has(id)) return "live";
+
+  // strStatus says in play (In Progress, 1H, HT, ET, VAR…) or a real minute is ticking
+  if (isLiveStatus(strStatus)) return "live";
+  if (progressMinute) return "live";
+
+  if (isScheduledStatus(strStatus)) return "scheduled";
+
+  // Unknown status string: fall back to kickoff-time heuristics
   const kickoff = parseKickoffUtc(
     String(event.dateEvent || ""),
     String(event.strTime || "")
   );
-  let minutesSinceKick = -9999;
-  if (kickoff) {
-    minutesSinceKick = (now.getTime() - kickoff.getTime()) / 60000;
-  }
+  const minutesSinceKick = kickoff
+    ? (now.getTime() - kickoff.getTime()) / 60000
+    : -9999;
 
-  if (liveIds.has(id)) return "live";
-
-  if (kickoff && minutesSinceKick > 105) {
+  if (kickoff && minutesSinceKick > 130) {
     return hasScore ? "final" : "scheduled";
   }
-
-  if (LIVE_STATUSES.has(strStatus)) {
-    if (kickoff && minutesSinceKick >= -10 && minutesSinceKick <= 105) {
-      return "live";
-    }
-    return hasScore ? "final" : "scheduled";
-  }
-
-  if (hasScore && kickoff && minutesSinceKick > 0) return "final";
+  if (hasScore && kickoff && minutesSinceKick > 0) return "live";
   return "scheduled";
 }
 
@@ -393,28 +436,40 @@ export function resolveLiveMinute(
 ): string {
   if (status !== "live") return "";
 
-  const strStatus = String(event.strStatus || "").trim();
-  if (strStatus === "HT" || strStatus === "Half Time") return "HT";
-
-  const raw = String(
-    event.strProgress || event.intProgress || event.strElapsed || ""
-  ).trim();
-
-  if (raw && raw !== "0") {
-    if (raw.includes(":")) return raw;
-    if (raw.includes("+")) return `${raw.replace(/\s/g, "")}'`;
-    if (/^\d+$/.test(raw)) return `${raw}'`;
-    return raw;
+  const strStatus = String(event.strStatus || "").trim().toLowerCase();
+  if (
+    strStatus === "ht" ||
+    strStatus === "half time" ||
+    strStatus === "halftime" ||
+    strStatus === "half-time"
+  ) {
+    return "HT";
   }
+  if (strStatus === "bt" || strStatus === "break time") return "BT";
+  if (strStatus === "p" || strStatus === "penalty shootout") return "PEN";
 
+  // strProgress carries the exact live minute (e.g. "67" or "45+2")
+  const progressMinute = parseProgressMinute(
+    event.strProgress ?? event.intProgress ?? event.strElapsed
+  );
+  if (progressMinute) return `${progressMinute}'`;
+
+  if (strStatus === "et" || strStatus === "extra time") return "ET";
+  if (strStatus === "var") return "VAR";
+  if (strStatus === "1h") return "1H";
+  if (strStatus === "2h") return "2H";
+
+  // Last resort: estimate from kickoff time
   const kickoff = parseKickoffUtc(
     String(event.dateEvent || ""),
     String(event.strTime || "")
   );
   if (kickoff) {
     const elapsed = (Date.now() - kickoff.getTime()) / 60000;
-    if (elapsed >= 0 && elapsed <= 120) {
-      return `${Math.floor(elapsed)}'`;
+    if (elapsed >= 0 && elapsed <= 45) return `${Math.floor(elapsed)}'`;
+    if (elapsed > 45 && elapsed <= 60) return "HT";
+    if (elapsed > 60 && elapsed <= 120) {
+      return `${Math.min(90, Math.floor(elapsed - 15))}'`;
     }
   }
 

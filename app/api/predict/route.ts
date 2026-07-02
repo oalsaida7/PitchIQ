@@ -232,19 +232,41 @@ async function fetchStats(matchId: string) {
   };
 }
 
+function candidateSeasons(isWorldCup: boolean): string[] {
+  const now = new Date();
+  const year = now.getFullYear();
+  // European seasons roll over mid-year: Aug–Dec belongs to "year-year+1",
+  // Jan–Jul belongs to "year-1-year".
+  const crossYear =
+    now.getMonth() >= 7
+      ? [`${year}-${year + 1}`, `${year - 1}-${year}`]
+      : [`${year - 1}-${year}`, `${year}-${year + 1}`];
+
+  if (isWorldCup) {
+    return [String(year), String(year - 1), "2026", "2022"].filter(
+      (s, i, arr) => arr.indexOf(s) === i
+    );
+  }
+  // Calendar-year leagues (MLS, Brasileirão, Nordic leagues) use plain years
+  return [...crossYear, String(year), String(year - 1)];
+}
+
 async function fetchTable(
   leagueId: string,
   leagueName: string,
   home: string,
   away: string
 ) {
-  const isWC = (leagueName || "").toLowerCase().includes("world cup");
-  const seasons = isWC
-    ? ["2026", "2025", "2022"]
-    : ["2025", "2025-2026", "2024-2025", "2024"];
+  if (!leagueId) {
+    return { teams: [], isReal: true, hasTable: false, _loaded: true };
+  }
 
-  for (const season of seasons) {
-    const data = await tsdbFetchV1(`lookuptable.php?l=${leagueId}&s=${season}`);
+  const isWC = (leagueName || "").toLowerCase().includes("world cup");
+
+  for (const season of candidateSeasons(isWC)) {
+    const data = await tsdbFetchV1(
+      `lookuptable.php?l=${encodeURIComponent(leagueId)}&s=${encodeURIComponent(season)}`
+    );
     const table = unwrapList(data, ["table", "standings", "list"]) as Array<
       Record<string, string>
     >;
@@ -265,21 +287,23 @@ async function fetchTable(
 
     return {
       teams: rows
-        .map((t) => ({
-          pos: Number(t.intRank),
-          name: t.strTeam,
-          played: Number(t.intPlayed),
-          won: Number(t.intWin),
-          drawn: Number(t.intDraw),
-          lost: Number(t.intLoss),
-          gd:
-            Number(t.intGoalDifference) >= 0
-              ? `+${t.intGoalDifference}`
-              : String(t.intGoalDifference),
-          pts: Number(t.intPoints),
-          group: t.strGroup || undefined,
-        }))
+        .map((t, i) => {
+          const gd = Number(t.intGoalDifference ?? 0);
+          return {
+            pos: Number(t.intRank) || i + 1,
+            name: t.strTeam || "Unknown",
+            badge: t.strBadge || t.strTeamBadge || "",
+            played: Number(t.intPlayed) || 0,
+            won: Number(t.intWin) || 0,
+            drawn: Number(t.intDraw) || 0,
+            lost: Number(t.intLoss) || 0,
+            gd: gd >= 0 ? `+${gd}` : String(gd),
+            pts: Number(t.intPoints) || 0,
+            group: t.strGroup || undefined,
+          };
+        })
         .sort((a, b) => a.pos - b.pos),
+      season,
       isReal: true,
       hasTable: true,
       isWorldCup: isWC,

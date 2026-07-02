@@ -80,13 +80,22 @@ function extractTag(title: string): NewsItem["tag"] {
 }
 
 function classifyItem(title: string, description: string, feedId: NewsCategory): NewsCategory {
+  // Classify by content first so items from a shared feed URL still spread
+  // across categories; fall back to the feed's own category.
   const text = `${title} ${description}`.toLowerCase();
-  if (feedId !== "general" && feedId !== "all") return feedId;
-  if (/transfer|sign|deal|fee|contract|here we go|loan/.test(text)) return "transfers";
-  if (/manager|coach|sacked|appointed|tactics/.test(text)) return "managers";
-  if (/world cup|nations league|international|qualifier|euro 20/.test(text))
+  if (/manager|coach|boss|sacked|sacking|appointed|dugout|touchline/.test(text))
+    return "managers";
+  if (
+    /world cup|nations league|international break|qualifier|euro 20|copa america|national team|friendly/.test(
+      text
+    )
+  )
     return "international";
-  if (/injury|return|fitness|suspension|player/.test(text)) return "players";
+  if (/transfer|signs|signing|signed|deal|fee|contract|here we go|loan|bid|swoop|move to/.test(text))
+    return "transfers";
+  if (/injur|fitness|suspension|ruled out|comeback|debut|hat-trick|goalscorer/.test(text))
+    return "players";
+  if (feedId !== "general" && feedId !== "all") return feedId;
   return "general";
 }
 

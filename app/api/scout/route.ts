@@ -4,11 +4,12 @@ import {
   CLAUDE_MODEL,
   decodeHtmlEntities,
   slugifySearch,
+  tsdbFetchV1,
   tsdbFetchV2,
   unwrapList,
 } from "@/lib/tsdb";
 
-const client = new Anthropic();
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 interface TSDBPlayer {
   idPlayer: string;
@@ -23,14 +24,29 @@ interface TSDBPlayer {
   strThumb?: string;
   strCutout?: string;
   strNumber?: string;
+  strSide?: string;
   strFoot?: string;
+  strDescriptionEN?: string;
+}
+
+interface SeasonStats {
+  goals: number;
+  assists: number;
+  apps: number;
+  avgRating: number;
 }
 
 function calcAge(dateBorn: string | undefined): number | null {
   if (!dateBorn) return null;
   const birth = new Date(dateBorn);
   if (isNaN(birth.getTime())) return null;
-  return new Date().getFullYear() - birth.getFullYear();
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const beforeBirthday =
+    now.getMonth() < birth.getMonth() ||
+    (now.getMonth() === birth.getMonth() && now.getDate() < birth.getDate());
+  if (beforeBirthday) age -= 1;
+  return age;
 }
 
 function defaultRatings(position: string) {
@@ -57,26 +73,61 @@ function hasValidRatings(ratings: unknown): ratings is Record<string, number> {
   );
 }
 
-async function searchPlayerV2(name: string): Promise<TSDBPlayer | null> {
-  const slug = slugifySearch(name);
-  const data = await tsdbFetchV2(`search/player/${slug}`);
-  const players = unwrapList(data, ["search", "player", "lookup", "list"]) as TSDBPlayer[];
+function pickBestPlayer(players: TSDBPlayer[], query: string): TSDBPlayer | null {
   if (!players.length) return null;
-
-  const exact = players.find(
-    (p) => p.strPlayer?.toLowerCase() === name.toLowerCase()
+  const soccerOnly = players.filter((p) =>
+    /soccer|football/i.test(String(p.strSport || "Soccer"))
   );
-  const soccer = players.find((p) =>
-    /soccer|football/i.test(String(p.strSport || "soccer"))
+  const pool = soccerOnly.length ? soccerOnly : players;
+  const exact = pool.find(
+    (p) => p.strPlayer?.toLowerCase() === query.toLowerCase()
   );
-  return exact || soccer || players[0];
+  const withTeam = pool.find((p) => p.strTeam && p.strTeam !== "_Retired Soccer");
+  return exact || withTeam || pool[0];
 }
 
-async function fetchPlayerStats(playerId: string) {
+async function searchPlayer(name: string): Promise<TSDBPlayer | null> {
+  // Step 1 of the hybrid engine: real factual data from TheSportsDB.
+  const v1Data = await tsdbFetchV1(
+    `searchplayers.php?p=${encodeURIComponent(name)}`
+  );
+  const v1Players = unwrapList(v1Data, ["player", "players", "list"]) as TSDBPlayer[];
+  const v1Pick = pickBestPlayer(v1Players, name);
+  if (v1Pick) return v1Pick;
+
+  // Fallback to the v2 search endpoint if v1 returns nothing.
+  const v2Data = await tsdbFetchV2(`search/player/${slugifySearch(name)}`);
+  const v2Players = unwrapList(v2Data, ["search", "player", "lookup", "list"]) as TSDBPlayer[];
+  return pickBestPlayer(v2Players, name);
+}
+
+async function fetchPlayerSeasonStats(playerId: string): Promise<{
+  seasonStats: SeasonStats | null;
+  pastSeasonStats: Array<Record<string, unknown>>;
+}> {
   const data = await tsdbFetchV2(`lookup/player_stats/${playerId}`);
-  return unwrapList(data, ["stats", "playerstats", "lookup", "list"]) as Array<
+  const rows = unwrapList(data, ["stats", "playerstats", "lookup", "list"]) as Array<
     Record<string, string>
   >;
+  if (!rows.length) return { seasonStats: null, pastSeasonStats: [] };
+
+  const latest = rows[0];
+  const seasonStats: SeasonStats = {
+    goals: Number(latest.intGoals || latest.strGoals || 0) || 0,
+    assists: Number(latest.intAssists || latest.strAssists || 0) || 0,
+    apps: Number(latest.intAppearances || latest.strAppearances || 0) || 0,
+    avgRating: Number(latest.strRating || 0) || 0,
+  };
+
+  const pastSeasonStats = rows.slice(0, 4).map((row, i) => ({
+    year: String(row.strSeason || row.strYear || `Season ${i + 1}`),
+    club: String(row.strTeam || "—"),
+    goals: Number(row.intGoals || 0) || 0,
+    assists: Number(row.intAssists || 0) || 0,
+    apps: Number(row.intAppearances || 0) || 0,
+  }));
+
+  return { seasonStats, pastSeasonStats };
 }
 
 async function fetchYouTubeHighlight(playerName: string) {
@@ -113,10 +164,11 @@ async function fetchYouTubeHighlight(playerName: string) {
   }
 }
 
-async function askHaikuAnalysis(
-  playerLabel: string,
-  profile: Record<string, unknown>
+async function askClaudeAnalysis(
+  factualProfile: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
+  // Steps 2 & 3: hand Claude the verified SportsDB payload and ask for
+  // analysis layered on top of it, never contradicting the facts.
   try {
     const msg = await client.messages.create({
       model: CLAUDE_MODEL,
@@ -124,21 +176,22 @@ async function askHaikuAnalysis(
       messages: [
         {
           role: "user",
-          content: `You are an elite football scout. Analyze ${playerLabel}.
-Verified profile (use for facts, do not contradict):
-${JSON.stringify(profile)}
+          content: `You are an elite football scout. Below is the VERIFIED factual profile of a player, fetched from TheSportsDB. These facts (club, country, position, height, weight, foot, statistics) are ground truth — repeat them exactly, never invent replacements for them.
 
-Return ONLY raw JSON. No markdown. No backticks.
+VERIFIED_PROFILE:
+${JSON.stringify(factualProfile, null, 2)}
+
+Return ONLY a raw JSON object. No markdown, no backticks, no commentary. Use exactly this shape:
 {
-  "overall": 88,
-  "hidden_gem": false,
-  "ratings": {"pace": 90, "technical": 92, "physical": 78, "mental": 85, "defending": 40, "shooting": 86},
-  "seasonStats": {"goals": 18, "assists": 12, "apps": 35, "avgRating": 7.8},
-  "pastSeasonStats": [{"year": "2024/25", "club": "Club Name", "goals": 10, "assists": 8, "apps": 30}],
-  "strengths": ["strength 1", "strength 2", "strength 3"],
-  "weaknesses": ["weakness 1", "weakness 2"],
-  "style": "Two sentences on playing style.",
-  "verdict": "Two sentences scout verdict on potential and market value."
+  "overall": <integer 40-99, your honest rating of the player's current level>,
+  "hidden_gem": <true if under-24 and undervalued relative to ability, else false>,
+  "ratings": {"pace": <1-99>, "technical": <1-99>, "physical": <1-99>, "mental": <1-99>, "defending": <1-99>, "shooting": <1-99>},
+  "seasonStats": <copy VERIFIED_PROFILE.seasonStats exactly if its "apps" is greater than 0; otherwise provide your best real-world estimate for the current season>,
+  "pastSeasonStats": <copy VERIFIED_PROFILE.pastSeasonStats exactly if non-empty; otherwise provide up to 3 real historical seasons you are confident about>,
+  "strengths": ["<specific strength>", "<specific strength>", "<specific strength>"],
+  "weaknesses": ["<specific weakness>", "<specific weakness>"],
+  "style": "<two sentences describing the player's playing style>",
+  "verdict": "<two sentences: scout verdict on potential, level, and market value>"
 }`,
         },
       ],
@@ -148,6 +201,8 @@ Return ONLY raw JSON. No markdown. No backticks.
       .filter((b) => b.type === "text")
       .map((b) => (b as { type: "text"; text: string }).text)
       .join("");
+
+    // Step 4: regex-extract the JSON body so stray prose never crashes the parse.
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return {};
     return JSON.parse(jsonMatch[0]);
@@ -165,43 +220,31 @@ export async function POST(request: Request) {
     }
 
     const query = name.trim();
-    const realPlayer = await searchPlayerV2(query);
+    const realPlayer = await searchPlayer(query);
 
-    let seasonStats = { goals: 0, assists: 0, apps: 0, avgRating: 0 };
-    const pastSeasonStats: Array<Record<string, unknown>> = [];
+    let seasonStats: SeasonStats = { goals: 0, assists: 0, apps: 0, avgRating: 0 };
+    let pastSeasonStats: Array<Record<string, unknown>> = [];
+    let hasRealStats = false;
 
     if (realPlayer?.idPlayer) {
-      const statsRows = await fetchPlayerStats(realPlayer.idPlayer);
-      if (statsRows.length) {
-        const latest = statsRows[0];
-        seasonStats = {
-          goals: Number(latest.intGoals || latest.strGoals || 0),
-          assists: Number(latest.intAssists || latest.strAssists || 0),
-          apps: Number(latest.intAppearances || latest.strAppearances || 0),
-          avgRating: Number(latest.strRating || 0) || 7.0,
-        };
-        statsRows.slice(0, 3).forEach((row, i) => {
-          pastSeasonStats.push({
-            year: String(row.strSeason || row.strYear || `Season ${i + 1}`),
-            club: String(row.strTeam || realPlayer.strTeam || "—"),
-            goals: Number(row.intGoals || 0),
-            assists: Number(row.intAssists || 0),
-            apps: Number(row.intAppearances || 0),
-          });
-        });
+      const stats = await fetchPlayerSeasonStats(realPlayer.idPlayer);
+      if (stats.seasonStats && stats.seasonStats.apps > 0) {
+        seasonStats = stats.seasonStats;
+        pastSeasonStats = stats.pastSeasonStats;
+        hasRealStats = true;
       }
     }
 
     const profile = {
       name: realPlayer?.strPlayer || query,
       club: realPlayer?.strTeam || "—",
-      league: "",
       nationality: realPlayer?.strNationality || "—",
       position: realPlayer?.strPosition || "—",
       age: calcAge(realPlayer?.dateBorn),
+      dateBorn: realPlayer?.dateBorn || "—",
       height: realPlayer?.strHeight || "—",
       weight: realPlayer?.strWeight || "—",
-      preferredFoot: realPlayer?.strFoot || "—",
+      preferredFoot: realPlayer?.strFoot || realPlayer?.strSide || "—",
       number: realPlayer?.strNumber || "—",
       playerThumb: realPlayer?.strThumb || "",
       playerCutout: realPlayer?.strCutout || "",
@@ -209,45 +252,54 @@ export async function POST(request: Request) {
       pastSeasonStats,
     };
 
-    let ytLink: string | null = null;
-    let ytTitle: string | null = null;
-    let ytThumb: string | null = null;
+    const [yt, ai] = await Promise.all([
+      fetchYouTubeHighlight(profile.name),
+      askClaudeAnalysis({
+        name: profile.name,
+        club: profile.club,
+        nationality: profile.nationality,
+        position: profile.position,
+        age: profile.age,
+        height: profile.height,
+        weight: profile.weight,
+        preferredFoot: profile.preferredFoot,
+        seasonStats: profile.seasonStats,
+        pastSeasonStats: profile.pastSeasonStats,
+      }),
+    ]);
 
-    try {
-      const yt = await fetchYouTubeHighlight(profile.name);
-      ytLink = yt.url;
-      ytTitle = yt.title;
-      ytThumb = yt.thumb;
-    } catch {
-      ytLink = null;
-    }
-
-    const ai = await askHaikuAnalysis(profile.name, profile);
     const ratings = hasValidRatings(ai.ratings)
       ? (ai.ratings as Record<string, number>)
       : defaultRatings(profile.position);
 
+    const aiSeasonStats = ai.seasonStats as SeasonStats | undefined;
+    const aiPastSeasons = Array.isArray(ai.pastSeasonStats)
+      ? (ai.pastSeasonStats as Array<Record<string, unknown>>)
+      : [];
+
     const report = {
+      // Real SportsDB facts always win over anything the model returned.
       ...profile,
+      seasonStats: hasRealStats
+        ? profile.seasonStats
+        : aiSeasonStats && typeof aiSeasonStats.apps === "number"
+        ? aiSeasonStats
+        : profile.seasonStats,
+      pastSeasonStats: hasRealStats
+        ? profile.pastSeasonStats
+        : aiPastSeasons.length
+        ? aiPastSeasons
+        : profile.pastSeasonStats,
+      statsSource: hasRealStats ? "thesportsdb" : "ai-estimate",
       overall:
         typeof ai.overall === "number" && ai.overall > 0
-          ? ai.overall
+          ? Math.round(ai.overall)
           : Math.round(
               Object.values(ratings).reduce((a, b) => a + b, 0) /
                 Object.values(ratings).length
             ),
       hidden_gem: Boolean(ai.hidden_gem),
       ratings,
-      seasonStats:
-        ai.seasonStats &&
-        typeof ai.seasonStats === "object" &&
-        (ai.seasonStats as { apps?: number }).apps !== undefined
-          ? ai.seasonStats
-          : profile.seasonStats,
-      pastSeasonStats:
-        Array.isArray(ai.pastSeasonStats) && ai.pastSeasonStats.length
-          ? ai.pastSeasonStats
-          : profile.pastSeasonStats,
       strengths:
         Array.isArray(ai.strengths) && ai.strengths.length
           ? ai.strengths
@@ -263,11 +315,12 @@ export async function POST(request: Request) {
       verdict:
         typeof ai.verdict === "string" && ai.verdict.length > 10
           ? ai.verdict
-          : `Strong ${profile.position} profile with upside at the top level. Market value reflects current form and age.`,
-      ytLink,
-      ytTitle,
-      ytThumb,
-      hasHighlight: !!ytLink,
+          : `Solid ${profile.position} profile. Market value reflects current form and age.`,
+      ytLink: yt.url,
+      ytTitle: yt.title,
+      ytThumb: yt.thumb,
+      hasHighlight: !!yt.url,
+      isRealPlayer: !!realPlayer,
       aiGenerated: Object.keys(ai).length > 0,
     };
 
