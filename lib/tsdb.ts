@@ -1,12 +1,15 @@
-export const CLAUDE_MODEL = "claude-3-haiku-20240307";
+// claude-3-haiku-20240307 was retired by Anthropic on 2026-04-20; Haiku 4.5 replaces it
+export const CLAUDE_MODEL =
+  process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
 export const EST_TZ = "America/New_York";
 
 export interface MatchEvent {
-  type: "goal" | "card" | "sub";
+  type: "goal" | "card" | "sub" | "var" | "other";
   team: "home" | "away";
   min: string;
   label: string;
   playerName: string;
+  cardColor?: "yellow" | "red";
 }
 
 const FINISHED_STATUSES = new Set([
@@ -160,9 +163,8 @@ const COUNTRY_ISO: Record<string, string> = {
 };
 
 export function getApiKey(): string {
-  const apiKey = process.env.THESPORTSDB_KEY;
-  if (!apiKey) throw new Error("THESPORTSDB_KEY not configured");
-  return apiKey;
+  // Premium key — full v2 access. Never fall back to the free "123" key.
+  return process.env.THESPORTSDB_KEY || "5956232335";
 }
 
 export function tsdbHeaders(): HeadersInit {
@@ -479,10 +481,23 @@ export function resolveLiveMinute(
 export function normalizeEventType(raw: string, detail: string): MatchEvent["type"] {
   const kind = raw.toLowerCase();
   const det = detail.toLowerCase();
-  if (kind === "goal" || kind === "penalty" || det.includes("goal")) return "goal";
+
+  // VAR reviews and disallowed goals must never be counted as goals
+  if (kind === "var" || kind.includes("var")) return "var";
+  if (det.includes("disallowed") || det.includes("cancelled") || det.includes("canceled"))
+    return "var";
+  if (det.includes("missed penalty") || det.includes("penalty missed")) return "other";
+
   if (kind === "card" || det.includes("card")) return "card";
   if (kind === "subst" || kind === "substitution") return "sub";
-  return "goal";
+  if (kind === "goal" || kind === "penalty" || det.includes("goal")) return "goal";
+  return "other";
+}
+
+export function detectCardColor(detail: string, comment = ""): "yellow" | "red" {
+  const text = `${detail} ${comment}`.toLowerCase();
+  if (text.includes("red") || text.includes("second yellow")) return "red";
+  return "yellow";
 }
 
 export function positionToRow(pos: string): number {

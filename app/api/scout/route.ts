@@ -87,18 +87,18 @@ function pickBestPlayer(players: TSDBPlayer[], query: string): TSDBPlayer | null
 }
 
 async function searchPlayer(name: string): Promise<TSDBPlayer | null> {
-  // Step 1 of the hybrid engine: real factual data from TheSportsDB.
+  // Step 1 of the hybrid engine: real factual data from TheSportsDB (v2 first).
+  const v2Data = await tsdbFetchV2(`search/player/${slugifySearch(name)}`);
+  const v2Players = unwrapList(v2Data, ["search", "player", "lookup", "list"]) as TSDBPlayer[];
+  const v2Pick = pickBestPlayer(v2Players, name);
+  if (v2Pick) return v2Pick;
+
+  // v1 fallback (uses the same premium key embedded in the URL).
   const v1Data = await tsdbFetchV1(
     `searchplayers.php?p=${encodeURIComponent(name)}`
   );
   const v1Players = unwrapList(v1Data, ["player", "players", "list"]) as TSDBPlayer[];
-  const v1Pick = pickBestPlayer(v1Players, name);
-  if (v1Pick) return v1Pick;
-
-  // Fallback to the v2 search endpoint if v1 returns nothing.
-  const v2Data = await tsdbFetchV2(`search/player/${slugifySearch(name)}`);
-  const v2Players = unwrapList(v2Data, ["search", "player", "lookup", "list"]) as TSDBPlayer[];
-  return pickBestPlayer(v2Players, name);
+  return pickBestPlayer(v1Players, name);
 }
 
 async function fetchPlayerSeasonStats(playerId: string): Promise<{

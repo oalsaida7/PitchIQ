@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   MatchEvent,
+  detectCardColor,
   estDateKey,
   fetchEventsForDate,
   fetchLiveEvents,
@@ -15,9 +16,30 @@ import {
 } from "@/lib/tsdb";
 
 function parseGoalString(goalStr: string, team: "home" | "away"): MatchEvent {
+  const lower = goalStr.toLowerCase();
   const match = goalStr.match(/([a-zA-ZÀ-ÿ\s.\-']+?)(?:\s+(\d+)(?:'|\+)?)?$/);
   const name = match ? match[1].trim() : goalStr.replace(/'/g, "").trim();
   const min = match?.[2] || "";
+
+  // Ruled-out / missed attempts sometimes appear inside the goal-details string
+  if (/disallow|ruled out|cancell|canceled|var/i.test(lower)) {
+    return {
+      type: "var",
+      team,
+      min,
+      playerName: name,
+      label: `VAR — Goal disallowed (${name})`,
+    };
+  }
+  if (/missed pen|penalty missed/i.test(lower)) {
+    return {
+      type: "other",
+      team,
+      min,
+      playerName: name,
+      label: `Penalty missed — ${name}`,
+    };
+  }
   return { type: "goal", team, min, playerName: name, label: `Goal — ${name}` };
 }
 
@@ -29,12 +51,14 @@ function parseCardString(
   const match = cardStr.match(/([a-zA-ZÀ-ÿ\s.\-']+?)(?:\s+(\d+)(?:'|\+)?)?$/);
   const name = match ? match[1].trim() : cardStr.trim();
   const min = match?.[2] || "";
+  const red = isRed || /red|second yellow/i.test(cardStr);
   return {
     type: "card",
     team,
     min,
     playerName: name,
-    label: `${isRed ? "Red" : "Yellow"} card — ${name}`,
+    cardColor: red ? "red" : "yellow",
+    label: `${red ? "Red" : "Yellow"} card — ${name}`,
   };
 }
 
@@ -79,7 +103,17 @@ function parseEventFields(
   pushSplit(event.strHomeSubstitutes, "home", parseSubString);
   pushSplit(event.strAwaySubstitutes, "away", parseSubString);
 
-  return events.sort(
+  // TSDB detail strings occasionally repeat the same entry — dedupe on
+  // type+team+player+minute so a scorer is never shown more times than real.
+  const seen = new Set<string>();
+  const deduped = events.filter((e) => {
+    const key = `${e.type}|${e.team}|${e.playerName.toLowerCase()}|${e.min}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return deduped.sort(
     (a, b) => (parseInt(a.min, 10) || 0) - (parseInt(b.min, 10) || 0)
   );
 }
@@ -90,42 +124,67 @@ function mapApiTimeline(rows: Array<Record<string, unknown>>): MatchEvent[] {
     const team: "home" | "away" = row.strHome === "Yes" ? "home" : "away";
     const min = String(row.intTime ?? "");
     const kind = String(row.strTimeline || "").toLowerCase();
-    const detail = String(row.strTimelineDetail || "").toLowerCase();
+    const detailRaw = String(row.strTimelineDetail || "").trim();
+    const detail = detailRaw.toLowerCase();
+    const comment = String(row.strComment || "").trim();
+    const player = String(row.strPlayer || "").trim();
     const type = normalizeEventType(kind, detail);
 
     if (type === "goal") {
       const assist = String(row.strAssist || "").trim();
+      const isPen = detail.includes("penalty");
+      const isOG = detail.includes("own goal");
+      const suffix = isPen ? " (pen)" : isOG ? " (OG)" : "";
       events.push({
         type: "goal",
         team,
         min,
-        playerName: String(row.strPlayer || ""),
+        playerName: player,
         label: assist
-          ? `Goal — ${row.strPlayer} (assist: ${assist})`
-          : `Goal — ${row.strPlayer || "Unknown"}`,
+          ? `Goal — ${player || "Unknown"}${suffix} (assist: ${assist})`
+          : `Goal — ${player || "Unknown"}${suffix}`,
+      });
+    } else if (type === "var") {
+      // Ruled-out goals / VAR reviews must be labelled, never counted as goals
+      const reason = detailRaw || comment || "Decision reviewed";
+      events.push({
+        type: "var",
+        team,
+        min,
+        playerName: player,
+        label: player ? `VAR — ${reason} (${player})` : `VAR — ${reason}`,
       });
     } else if (type === "card") {
-      const isRed = detail.includes("red");
+      const cardColor = detectCardColor(detail, comment);
       events.push({
         type: "card",
         team,
         min,
-        playerName: String(row.strPlayer || ""),
-        label: `${isRed ? "Red" : "Yellow"} card — ${row.strPlayer || "Unknown"}`,
+        playerName: player,
+        cardColor,
+        label: `${cardColor === "red" ? "Red" : "Yellow"} card — ${player || "Unknown"}`,
       });
     } else if (type === "sub") {
       const onPlayer =
-        String(row.strAssist || "").trim() ||
-        String(row.strTimelineDetail || "").trim() ||
-        "";
+        String(row.strAssist || "").trim() || detailRaw || "";
       events.push({
         type: "sub",
         team,
         min,
-        playerName: String(row.strPlayer || ""),
+        playerName: player,
         label: onPlayer
-          ? `Sub: ${row.strPlayer} → ${onPlayer}`
-          : `Sub: ${row.strPlayer || "Unknown"}`,
+          ? `Sub: ${player} → ${onPlayer}`
+          : `Sub: ${player || "Unknown"}`,
+      });
+    } else if (type === "other") {
+      // e.g. missed penalties — shown in the timeline, excluded from scorers
+      const reason = detailRaw || comment || "Match incident";
+      events.push({
+        type: "other",
+        team,
+        min,
+        playerName: player,
+        label: player ? `${reason} — ${player}` : reason,
       });
     }
   }
@@ -240,8 +299,26 @@ export async function GET(request: Request) {
       };
     });
 
+    // Re-fetch the official timeline when string-parsed events are missing or
+    // clearly wrong (more goal events than the actual score — the "phantom
+    // scorer" bug where disallowed goals inflate the tally).
+    const looksInconsistent = (m: (typeof cleanMatches)[number]) => {
+      const homeGoals = m.events.filter(
+        (e) => e.type === "goal" && e.team === "home"
+      ).length;
+      const awayGoals = m.events.filter(
+        (e) => e.type === "goal" && e.team === "away"
+      ).length;
+      return (
+        m.hasScore &&
+        (homeGoals > m.score.home || awayGoals > m.score.away)
+      );
+    };
+
     const enrichTargets = cleanMatches.filter(
-      (m) => (m.status === "live" || m.status === "final") && m.events.length === 0
+      (m) =>
+        (m.status === "live" || m.status === "final") &&
+        (m.events.length === 0 || m.status === "live" || looksInconsistent(m))
     );
 
     if (enrichTargets.length > 0) {

@@ -337,7 +337,28 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
               </span>
             ))}
           </div>
+          {data.confidence && (
+            <div style={{ fontSize: 10, color: C.iceDim, marginTop: 6, textTransform: "uppercase", letterSpacing: ".5px" }}>
+              Confidence: {data.confidence}
+            </div>
+          )}
         </div>
+        {(data.keyBattle || data.firstGoal) && (
+          <>
+            <Divider />
+            <SLabel>Key Battle</SLabel>
+            {data.keyBattle && (
+              <p style={{ fontSize: 13, color: C.ice, lineHeight: 1.6, marginBottom: 6 }}>
+                {data.keyBattle}
+              </p>
+            )}
+            {data.firstGoal && (
+              <p style={{ fontSize: 12, color: C.iceDim, lineHeight: 1.5 }}>
+                First goal: {data.firstGoal}
+              </p>
+            )}
+          </>
+        )}
         <Divider />
         <SLabel>Predicted Scorers</SLabel>
         <p style={{ fontSize: 13, color: C.ice, marginBottom: 4 }}>
@@ -926,6 +947,24 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
           </div>
         )}
 
+        {data.analysis && (
+          <>
+            <SLabel>AI Match Analysis</SLabel>
+            <div
+              style={{
+                fontSize: 13,
+                color: C.ice,
+                lineHeight: 1.7,
+                borderLeft: `2px solid ${C.cyan}`,
+                paddingLeft: 12,
+                marginBottom: 14,
+              }}
+            >
+              {data.analysis}
+            </div>
+          </>
+        )}
+
         <SLabel>Goal Scorers</SLabel>
         {(data.scorers || []).length === 0 && (
           <p
@@ -976,6 +1015,113 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
               </div>
             </div>
           )
+        )}
+
+        {(data.varIncidents || []).length > 0 && (
+          <>
+            <Divider />
+            <SLabel color={C.amber}>VAR / Disallowed</SLabel>
+            {(data.varIncidents as Array<{ minute: string; label: string; team: string }>).map(
+              (v, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: "6px 0",
+                    borderBottom: `1px solid ${C.border}`,
+                    fontSize: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      color: C.amber,
+                      fontWeight: 700,
+                      minWidth: 28,
+                      fontFamily: "'JetBrains Mono',monospace",
+                    }}
+                  >
+                    {v.minute}&apos;
+                  </span>
+                  <div>
+                    <div style={{ color: C.ice }}>⛔ {v.label}</div>
+                    <div style={{ color: C.iceDim }}>{v.team}</div>
+                  </div>
+                </div>
+              )
+            )}
+          </>
+        )}
+
+        {(data.redCards || []).length > 0 && (
+          <>
+            <Divider />
+            <SLabel color={C.red}>Red Cards</SLabel>
+            {(data.redCards as Array<{ minute: string; name: string; team: string }>).map(
+              (r, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: "6px 0",
+                    borderBottom: `1px solid ${C.border}`,
+                    fontSize: 12,
+                  }}
+                >
+                  <span
+                    style={{
+                      color: C.red,
+                      fontWeight: 700,
+                      minWidth: 28,
+                      fontFamily: "'JetBrains Mono',monospace",
+                    }}
+                  >
+                    {r.minute}&apos;
+                  </span>
+                  <div>
+                    <div style={{ color: C.ice }}>🟥 {r.name}</div>
+                    <div style={{ color: C.iceDim }}>{r.team}</div>
+                  </div>
+                </div>
+              )
+            )}
+          </>
+        )}
+
+        {data.nextMatchPrediction?.scoreline && (
+          <>
+            <Divider />
+            <SLabel>AI Prediction — Next Fixtures</SLabel>
+            <div
+              style={{
+                background: C.c3,
+                borderRadius: 8,
+                padding: "10px 12px",
+                border: `1px solid ${C.cyanBorder}`,
+                marginBottom: 12,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: C.cyan,
+                  marginBottom: 4,
+                  fontFamily: "'JetBrains Mono',monospace",
+                }}
+              >
+                {data.nextMatchPrediction.scoreline}
+              </div>
+              {data.nextMatchPrediction.reasoning && (
+                <div
+                  style={{ fontSize: 12, color: C.ice, lineHeight: 1.65 }}
+                >
+                  {data.nextMatchPrediction.reasoning}
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         <Divider />
@@ -1116,6 +1262,7 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
       yellow: C.amber,
       redcard: C.red,
       red: C.red,
+      var: C.amber,
       chance: C.blue,
       normal: C.ice,
     };
@@ -1127,6 +1274,7 @@ function TabContent({ match, tab, data }: { match: any; tab: MatchTab; data: any
       card: "🟨",
       red: "🟥",
       redcard: "🟥",
+      var: "⛔",
       chance: "",
       normal: "",
     };
@@ -1636,7 +1784,14 @@ function MatchCard({ match, isLast }: { match: any; isLast?: boolean }) {
     isFinal && match.hasScore && match.score.away > match.score.home;
   const showScore = (isFinal || isLive) && match.hasScore;
 
-  const goals = matchEvents(match).filter((e) => e.type === "goal");
+  const stripEvents = matchEvents(match).filter(
+    (e) =>
+      e.type === "goal" ||
+      e.type === "var" ||
+      (e.type === "card" &&
+        ((e as { cardColor?: string }).cardColor === "red" ||
+          /red card/i.test(String(e.label || ""))))
+  );
 
   const teamRow = (side: "home" | "away") => {
     const isHome = side === "home";
@@ -1800,8 +1955,8 @@ function MatchCard({ match, isLast }: { match: any; isLast?: boolean }) {
         </div>
       </div>
 
-      {/* Goal scorers strip (live/final only) */}
-      {goals.length > 0 && (
+      {/* Key events strip: goals, disallowed goals, red cards */}
+      {stripEvents.length > 0 && (
         <div
           style={{
             padding: "0 12px 8px 68px",
@@ -1810,22 +1965,32 @@ function MatchCard({ match, isLast }: { match: any; isLast?: boolean }) {
             flexWrap: "wrap",
           }}
         >
-          {goals.map((e, i) => (
-            <span
-              key={i}
-              style={{
-                fontSize: 10,
-                color: C.iceDim,
-                display: "flex",
-                alignItems: "center",
-                gap: 3,
-              }}
-            >
-              <span style={{ color: e.team === "home" ? C.cyan : C.blue }}>⚽</span>
-              {e.playerName || e.label || "Goal"}
-              {e.min ? ` ${e.min}'` : ""}
-            </span>
-          ))}
+          {stripEvents.map((e, i) => {
+            const icon =
+              e.type === "goal" ? "⚽" : e.type === "var" ? "⛔" : "🟥";
+            const disallowed = e.type === "var";
+            return (
+              <span
+                key={i}
+                style={{
+                  fontSize: 10,
+                  color: C.iceDim,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 3,
+                  textDecoration: disallowed ? "line-through" : "none",
+                  opacity: disallowed ? 0.75 : 1,
+                }}
+                title={disallowed ? e.label : undefined}
+              >
+                <span style={{ color: e.team === "home" ? C.cyan : C.blue }}>
+                  {icon}
+                </span>
+                {e.playerName || e.label || "Event"}
+                {e.min ? ` ${e.min}'` : ""}
+              </span>
+            );
+          })}
         </div>
       )}
 
